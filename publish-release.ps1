@@ -48,13 +48,18 @@ git add -A
 git diff --cached --quiet
 if ($LASTEXITCODE -ne 0) {
     git commit -m "Release $tag"
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 git tag -f $tag
 git push -u origin main
 git push -f origin $tag
 
-$existing = gh release view $tag 2>$null
-if ($LASTEXITCODE -eq 0) {
+$ErrorActionPreference = "Continue"
+gh release view $tag *>$null
+$releaseExists = ($LASTEXITCODE -eq 0)
+$ErrorActionPreference = "Stop"
+
+if ($releaseExists) {
     gh release upload $tag $zipPath $manifestPath --clobber
 } else {
     gh release create $tag $zipPath $manifestPath --title "Phantom Voicer $tag" --notes "Persona 5 inspired instrument & chord voicer (VST3 / CLAP / Standalone EXE)."
