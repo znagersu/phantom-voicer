@@ -4,13 +4,13 @@ use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Enum)]
 pub enum SoundPatch {
-    #[name = "Velvet Rhodes (EP)"]
+    #[name = "Scarbee Pan Cake (EP)"]
     VelvetRhodes,
-    #[name = "Funk Slap Bass"]
+    #[name = "Clean Fender (Full Range)"]
     SlapBass,
     #[name = "Phantom Brass"]
     PhantomBrass,
-    #[name = "Wah Clav / Lead"]
+    #[name = "Wah Clav / Guitar"]
     WahClav,
 }
 
@@ -268,8 +268,8 @@ impl Default for PhantomParams {
             .with_value_to_string(formatters::v2s_f32_gain_to_db(1))
             .with_string_to_value(formatters::s2v_f32_gain_to_db()),
             rhodes_bark: FloatParam::new(
-                "Rhodes Bark",
-                0.35,
+                "Bark / Growl",
+                0.30,
                 FloatRange::Linear { min: 0.0, max: 1.0 },
             )
             .with_unit("%")
@@ -277,25 +277,25 @@ impl Default for PhantomParams {
             .with_string_to_value(formatters::s2v_f32_percentage()),
             wah_amount: FloatParam::new(
                 "Auto-Wah",
-                0.25,
+                0.0,
                 FloatRange::Linear { min: 0.0, max: 1.0 },
             )
             .with_unit("%")
             .with_value_to_string(formatters::v2s_f32_percentage(0))
             .with_string_to_value(formatters::s2v_f32_percentage()),
             tremolo_depth: FloatParam::new(
-                "Tremolo",
-                0.35,
+                "Pan Cake Depth",
+                0.60,
                 FloatRange::Linear { min: 0.0, max: 1.0 },
             )
             .with_unit("%")
             .with_value_to_string(formatters::v2s_f32_percentage(0))
             .with_string_to_value(formatters::s2v_f32_percentage()),
             tremolo_rate_hz: FloatParam::new(
-                "Trem Rate",
-                3.8,
+                "Pan Rate",
+                2.6,
                 FloatRange::Skewed {
-                    min: 0.5,
+                    min: 0.4,
                     max: 10.0,
                     factor: FloatRange::skew_factor(-1.0),
                 },

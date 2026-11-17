@@ -410,8 +410,8 @@ fn draw_crimson_command_zone(
     child_ui.add_space(4.0);
 
     let patches = [
-        (SoundPatch::VelvetRhodes, "Velvet Rhodes", "EP", P5Icon::Square),
-        (SoundPatch::SlapBass, "Slap Bass", "SUB", P5Icon::Triangle),
+        (SoundPatch::VelvetRhodes, "Scarbee Pan Cake", "EP", P5Icon::Square),
+        (SoundPatch::SlapBass, "Clean Fender Bass", "JB", P5Icon::Triangle),
         (SoundPatch::PhantomBrass, "Phantom Brass", "HRN", P5Icon::Circle),
         (SoundPatch::WahClav, "Wah Clav", "FNK", P5Icon::Cross),
     ];
@@ -833,11 +833,19 @@ fn draw_starburst_zone(
                 p5_knob(ui, "Bark", &params.rhodes_bark, setter, P5_RED, kw);
                 p5_knob(ui, "Auto-Wah", &params.wah_amount, setter, P5_GOLD, kw);
             });
-            ui.add_space(6.0);
+            ui.add_space(4.0);
             ui.horizontal(|ui| {
                 let kw = (ui.available_width() - 12.0) / 2.0;
-                p5_knob(ui, "Chor/Trem", &params.tremolo_depth, setter, P5_CYAN, kw);
-                p5_knob(ui, "Gain", &params.preview_gain, setter, P5_WHITE, kw);
+                p5_knob(ui, "Pan Depth", &params.tremolo_depth, setter, P5_CYAN, kw);
+                p5_knob(ui, "Pan Rate", &params.tremolo_rate_hz, setter, P5_WHITE, kw);
+            });
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Out Gain").size(10.5).strong().color(P5_MUTED));
+                ui.add(
+                    nih_plug_egui::widgets::ParamSlider::for_param(&params.preview_gain, setter)
+                        .with_width(ui.available_width()),
+                );
             });
         });
     });
@@ -964,7 +972,7 @@ fn draw_cutout_card(
         .stroke(Stroke::new(2.0_f32, P5_WHITE))
         .inner_margin(9.0)
         .show(ui, |ui| {
-            ui.set_min_height(194.0);
+            ui.set_min_height(214.0);
             let (tag_rect, _) =
                 ui.allocate_exact_size(Vec2::new(ui.available_width(), 24.0), Sense::hover());
             draw_p5_3d_text(
