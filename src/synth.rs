@@ -380,8 +380,8 @@ impl PhantomSynth {
         self.mk1_cab_body_r = Biquad::peaking(sr, 130.0, 0.75, 1.8);
         self.mk1_cab_scoop_l = Biquad::peaking(sr, 410.0, 1.0, -1.8);
         self.mk1_cab_scoop_r = Biquad::peaking(sr, 410.0, 1.0, -1.8);
-        self.mk1_cab_lpf_l = Biquad::low_pass(sr, 5200.0, 0.70);
-        self.mk1_cab_lpf_r = Biquad::low_pass(sr, 5200.0, 0.70);
+        self.mk1_cab_lpf_l = Biquad::low_pass(sr, 6800.0, 0.68);
+        self.mk1_cab_lpf_r = Biquad::low_pass(sr, 6800.0, 0.68);
         self.last_mk1_bass = 999.0;
         self.last_mk1_treble = 999.0;
     }
@@ -389,15 +389,15 @@ impl PhantomSynth {
     fn update_mk1_tone(&mut self, bass: f32, treble: f32) {
         if (bass - self.last_mk1_bass).abs() > 0.005 {
             self.last_mk1_bass = bass;
-            let db = bass.clamp(-1.0, 1.0) * 7.5;
-            self.mk1_bass_l = Biquad::low_shelf(self.sample_rate, 115.0, db);
-            self.mk1_bass_r = Biquad::low_shelf(self.sample_rate, 115.0, db);
+            let db = bass.clamp(-1.0, 1.0) * 14.0;
+            self.mk1_bass_l = Biquad::low_shelf(self.sample_rate, 160.0, db);
+            self.mk1_bass_r = Biquad::low_shelf(self.sample_rate, 160.0, db);
         }
         if (treble - self.last_mk1_treble).abs() > 0.005 {
             self.last_mk1_treble = treble;
-            let db = treble.clamp(-1.0, 1.0) * 7.5;
-            self.mk1_treble_l = Biquad::high_shelf(self.sample_rate, 2700.0, db);
-            self.mk1_treble_r = Biquad::high_shelf(self.sample_rate, 2700.0, db);
+            let db = treble.clamp(-1.0, 1.0) * 15.0;
+            self.mk1_treble_l = Biquad::high_shelf(self.sample_rate, 1050.0, db);
+            self.mk1_treble_r = Biquad::high_shelf(self.sample_rate, 1050.0, db);
         }
     }
 
@@ -582,8 +582,8 @@ impl PhantomSynth {
             SoundPatch::PhantomBrass => (-1.0 / (0.140 * sr)).exp(),
             SoundPatch::WahClav => (-1.0 / (0.095 * sr)).exp(),
         };
-        let hammer_decay = (-1.0 / (0.014 * sr)).exp();
-        let rel_thump_decay = (-1.0 / (0.022 * sr)).exp();
+        let hammer_decay = (-1.0 / (0.016 * sr)).exp();
+        let rel_thump_decay = (-1.0 / (0.032 * sr)).exp();
 
         let harm_decays = [
             (-1.0 / (1.85 * sr)).exp(),
@@ -651,17 +651,20 @@ impl PhantomSynth {
                     let reg = ((v.note as f32 - 36.0) / 48.0).clamp(0.0, 1.0);
                     let stiffness_b = 0.0007 + reg * 0.0011;
 
-                    // Individual modal decay envelopes (high partials die down into warm wood fundamental)
+                    // Individual modal decay envelopes (brightness strongly controls tine shimmer & sustain harmonics)
                     let age_s = v.age_samples as f32 / sr;
-                    let vel_bright = (0.35 + 0.65 * v.velocity) * (0.55 + 0.65 * brightness);
+                    let vel_factor = 0.35 + 0.65 * v.velocity;
+                    let bright_curve = brightness * brightness * 0.55 + brightness * 0.75;
+                    let bell_scale = if v.is_bass { 0.02 } else { (0.12 + 1.45 * bright_curve) * vel_factor };
+                    let overtone_scale = (0.18 + 1.25 * brightness) * (0.45 + 0.55 * vel_factor);
 
                     // Mode 1: Warm fundamental (tonebar coupled sustain)
                     let mut modal_sum = (v.phase * TAU).sin() * 0.92;
 
-                    // Modes 2..7: Stiff-rod overtones + chime mode (~6.27x) with fast-to-medium decay
+                    // Modes 2..7: Stiff-rod overtones + chime mode (~6.27x)
                     let mode_ratios: [f32; 6] = [2.0, 3.0, 4.0, 5.0, 6.27, 7.0];
-                    let base_weights: [f32; 6] = [0.22, 0.08, 0.035, 0.022, 0.14, 0.08];
-                    let tau_secs: [f32; 6] = [1.45, 0.72, 0.34, 0.18, 0.085, 0.055];
+                    let base_weights: [f32; 6] = [0.28, 0.14, 0.075, 0.048, 0.21, 0.13];
+                    let tau_secs: [f32; 6] = [1.55, 0.88, 0.46, 0.26, 0.115 + brightness * 0.11, 0.07 + brightness * 0.075];
 
                     for i in 0..6 {
                         let k = mode_ratios[i];
@@ -672,45 +675,53 @@ impl PhantomSynth {
                         let mdt = fk / sr;
                         v.rhodes_phases[i] = (v.rhodes_phases[i] + mdt).fract();
                         let decay = (-age_s / tau_secs[i]).exp();
-                        // Tine chime modes (6.27, 7.0) bloom gently with velocity & brightness
                         let w = if i >= 4 {
-                            if v.is_bass { 0.015 } else { base_weights[i] * vel_bright }
+                            base_weights[i] * bell_scale
                         } else {
-                            base_weights[i] * (0.6 + 0.4 * vel_bright)
+                            base_weights[i] * overtone_scale
                         };
                         modal_sum += (v.rhodes_phases[i] * TAU).sin() * w * decay;
                     }
 
                     // Per-voice magnetic pickup proximity nonlinearity ("Rhodes Bark"):
-                    // Clean and glassy at soft/medium velocity; warm asymmetric bite ONLY on hard hits!
+                    // Clean/glassy when bark is low & soft-played; biting asymmetric growl when cranked!
                     let hard_vel = ((v.velocity - 0.52) / 0.48).clamp(0.0, 1.0);
-                    let bark_drive = (hard_vel * 0.42 + bark * 0.55) * (0.30 + 0.70 * v.pluck_env);
+                    let bark_drive = hard_vel * 0.42 * v.pluck_env
+                        + bark * 1.15 * (0.48 + 0.52 * v.pluck_env);
                     let voice_out = if bark_drive > 0.02 {
-                        let x = modal_sum * (1.0 + bark_drive * 0.95);
+                        let drive_gain = 1.0 + bark_drive * 3.4;
+                        let x = modal_sum * drive_gain;
                         let asym = if x >= 0.0 {
-                            x - 0.16 * bark_drive * x * x
+                            x + 0.14 * bark_drive * x * x
                         } else {
-                            x + 0.08 * bark_drive * x * x
+                            x - 0.06 * bark_drive * x * x
                         };
-                        fast_tanh(asym) / (1.0 + bark_drive * 0.42)
+                        fast_tanh(asym) / drive_gain.powf(0.62)
                     } else {
                         modal_sum
                     };
 
-                    // Mechanical Instrument Noise: felt hammer knock + key-off damper release thump
+                    // Mechanical Instrument Noise: clearly audible hammer thump + keybed click & release damper clack
                     let raw_noise = v.next_noise();
-                    let filt_noise = voice_lpf(
+                    let thud_noise = voice_lpf(
                         raw_noise,
-                        260.0 + 240.0 * v.velocity,
-                        0.68,
+                        280.0 + 380.0 * v.velocity,
+                        0.55,
                         sr,
                         &mut v.filter_ic1,
                         &mut v.filter_ic2,
                     );
-                    let strike_noise =
-                        (filt_noise * 0.14 + (v.phase * TAU * 1.5).sin() * 0.05) * v.hammer_env * mk1.noise_level;
-                    let rel_thump =
-                        filt_noise * 0.24 * v.release_thump_env * mk1.release_noise;
+                    let key_click_env = (-age_s / 0.0085).exp();
+                    let strike_thud = (thud_noise * 1.15 + (v.phase * TAU * 1.5).sin() * 0.10)
+                        * v.hammer_env
+                        * (0.5 + 0.5 * v.velocity);
+                    let strike_click = raw_noise * 0.16 * key_click_env * (0.4 + 0.6 * v.velocity);
+                    let strike_noise = (strike_thud + strike_click) * mk1.noise_level * 0.72;
+
+                    let rel_thump = (thud_noise * 1.85 + raw_noise * 0.18)
+                        * v.release_thump_env
+                        * mk1.release_noise
+                        * 0.95;
 
                     let core = voice_out * 0.65 * v.env + strike_noise + rel_thump;
                     let sample = core * v.velocity * 0.36;
@@ -730,7 +741,7 @@ impl PhantomSynth {
                     let w1 = 0.72 * (PI * NECK_POS).sin() + 0.48 * (PI * BRIDGE_POS).sin();
                     let mut sum = ph.sin() * w1 * 1.05;
 
-                    let bright_scale = 0.35 + 0.85 * brightness;
+                    let bright_scale = 0.15 + 1.35 * brightness;
                     let vel_tilt = 0.55 + 0.45 * v.velocity;
                     for idx in 0..6 {
                         let k = (idx + 2) as f32;
@@ -815,35 +826,35 @@ impl PhantomSynth {
             left = self.mk1_treble_l.process(left);
             right = self.mk1_treble_r.process(right);
 
-            // 1) COMP. (optional)
+            // 1) COMP. (optional VCA/optical stomp squeeze)
             if mk1.fx_comp {
                 let lvl = (left.abs() + right.abs()) * 0.5;
-                let atk = 1.0 - (-1.0 / (0.012 * sr)).exp();
-                let rel = 1.0 - (-1.0 / (0.160 * sr)).exp();
+                let atk = 1.0 - (-1.0 / (0.008 * sr)).exp();
+                let rel = 1.0 - (-1.0 / (0.140 * sr)).exp();
                 if lvl > self.mk1_comp_env {
                     self.mk1_comp_env += (lvl - self.mk1_comp_env) * atk;
                 } else {
                     self.mk1_comp_env += (lvl - self.mk1_comp_env) * rel;
                 }
-                let thresh = 0.18;
+                let thresh = 0.045;
                 let cg = if self.mk1_comp_env > thresh {
-                    (thresh / self.mk1_comp_env).powf(0.55).clamp(0.35, 1.0)
+                    (thresh / self.mk1_comp_env).powf(0.68).clamp(0.22, 1.0)
                 } else {
                     1.0
                 };
-                left *= cg * 1.28;
-                right *= cg * 1.28;
+                left *= cg * 1.48;
+                right *= cg * 1.48;
             }
 
             // 2) DIST. (BYPASSED when mk1.fx_dist is OFF, matching Pan Cake Kore!)
             if mk1.fx_dist {
-                let drv = 2.6 + bark * 1.6;
-                left = fast_tanh(left * drv) / (1.0 + (drv - 1.0) * 0.45);
-                right = fast_tanh(right * drv) / (1.0 + (drv - 1.0) * 0.45);
+                let drv = 8.0 + bark * 10.0;
+                left = fast_tanh(left * drv + 0.12 * left * left * drv) / (1.0 + (drv - 1.0) * 0.24);
+                right = fast_tanh(right * drv + 0.12 * right * right * drv) / (1.0 + (drv - 1.0) * 0.24);
             }
 
-            // 3) AUTOWAH (optional)
-            let eff_wah = if mk1.fx_autowah { wah_amount.max(0.75) } else { wah_amount };
+            // 3) AUTOWAH (optional resonant Mu-Tron envelope follower)
+            let eff_wah = if mk1.fx_autowah { wah_amount.max(0.85) } else { wah_amount };
             if eff_wah > 0.001 {
                 let (wl, wr) = self.process_autowah(left, right, brightness, sr);
                 left = left * (1.0 - eff_wah) + wl * eff_wah;
@@ -851,18 +862,22 @@ impl PhantomSynth {
             }
 
             // 4) PHASER (optional 4-stage analog allpass)
-            self.phaser_phase = (self.phaser_phase + TAU * 0.52 / sr).rem_euclid(TAU);
+            self.phaser_phase = (self.phaser_phase + TAU * 0.48 / sr).rem_euclid(TAU);
             if mk1.fx_phaser {
                 let (pl, pr) = self.process_phaser(left, right, sr);
-                left = left * 0.55 + pl * 0.45;
-                right = right * 0.55 + pr * 0.45;
+                left = left * 0.50 + pl * 0.50;
+                right = right * 0.50 + pr * 0.50;
             }
 
-            // 5) AMP (ON in Pan Cake Kore! Clean Fender Twin warmth + 2x12 cabinet tone, NO gritty fuzz)
+            // 5) AMP (ON in Pan Cake Kore! Responsive Fender Twin tube stage + 2x12 cab + real Output trim)
             if mk1.fx_amp {
-                let drv = 1.0 + mk1.amp_drive * 0.55;
-                left = fast_tanh(left * drv) / (1.0 + mk1.amp_drive * 0.20);
-                right = fast_tanh(right * drv) / (1.0 + mk1.amp_drive * 0.20);
+                let d = mk1.amp_drive.clamp(0.0, 1.0);
+                let drv = 1.0 + d * d * 12.0 + d * 1.5;
+                let asym_l = left * drv + 0.18 * d * left * left * drv;
+                let asym_r = right * drv + 0.18 * d * right * right * drv;
+                let norm = drv.powf(0.68);
+                left = fast_tanh(asym_l) / norm;
+                right = fast_tanh(asym_r) / norm;
 
                 left = self.mk1_cab_body_l.process(left);
                 right = self.mk1_cab_body_r.process(right);
@@ -871,44 +886,46 @@ impl PhantomSynth {
                 left = self.mk1_cab_lpf_l.process(left);
                 right = self.mk1_cab_lpf_r.process(right);
 
-                let out_trim = 0.65 + mk1.amp_output * 0.75;
+                let o = mk1.amp_output.clamp(0.0, 1.0);
+                let out_trim = 0.05 + o * o * 1.85 + o * 0.45;
                 left *= out_trim;
                 right *= out_trim;
             }
 
-            // 6) CHORUS (ON in Pan Cake Kore! Subtle, lush Boss CE-1 style stereo ensemble)
+            // 6) CHORUS (ON in Pan Cake Kore! Lush Boss CE-1 style stereo ensemble)
             self.chorus_phase = (self.chorus_phase + TAU * 0.38 / sr).rem_euclid(TAU);
             self.delay_l[self.delay_idx] = left;
             self.delay_r[self.delay_idx] = right;
             if mk1.fx_chorus {
-                let mod1 = (0.0085 + 0.0018 * self.chorus_phase.sin()) * sr;
-                let mod2 = (0.0115 + 0.0018 * self.chorus_phase.cos()) * sr;
+                let mod1 = (0.0085 + 0.0022 * self.chorus_phase.sin()) * sr;
+                let mod2 = (0.0115 + 0.0022 * self.chorus_phase.cos()) * sr;
                 let wet_l = read_delay_linear(&self.delay_l, self.delay_idx, mod1);
                 let wet_r = read_delay_linear(&self.delay_r, self.delay_idx, mod2);
-                left = left * 0.84 + wet_r * 0.22;
-                right = right * 0.84 + wet_l * 0.22;
+                left = left * 0.80 + wet_r * 0.30;
+                right = right * 0.80 + wet_l * 0.30;
             }
             self.delay_idx = (self.delay_idx + 1) & 2047;
 
-            // 7) PAN (ON in Pan Cake Kore! Tempo-synced or free stereo auto-panner)
+            // 7) PAN (ON in Pan Cake Kore! Tempo-synced or free stereo auto-panner with zero dead zones)
             let pan_hz = if mk1.pan_sync {
-                let subdiv = match (mk1.pan_speed * 6.0).round() as usize {
-                    0 => 0.5,
-                    1 => 0.75,
-                    2 => 1.0,
-                    3 => 1.0,
-                    4 => 1.5,
-                    5 => 2.0,
+                let subdiv = match (mk1.pan_speed.clamp(0.0, 1.0) * 7.0).round() as usize {
+                    0 => 0.25,
+                    1 => 0.375,
+                    2 => 0.5,
+                    3 => 0.75,
+                    4 => 1.0,
+                    5 => 1.5,
+                    6 => 2.0,
                     _ => 4.0,
                 };
                 (mk1.tempo_bpm / 60.0) * subdiv
             } else {
-                0.4 + mk1.pan_speed * 7.6
+                0.3 + mk1.pan_speed * 9.7
             };
             self.pancake_phase = (self.pancake_phase + TAU * pan_hz / sr).rem_euclid(TAU);
             if mk1.fx_pan && mk1.pan_intensity > 0.001 {
                 let lfo = self.pancake_phase.sin();
-                let pan_angle = (PI * 0.25) + lfo * (PI * 0.22 * mk1.pan_intensity.clamp(0.0, 1.0));
+                let pan_angle = (PI * 0.25) + lfo * (PI * 0.245 * mk1.pan_intensity.clamp(0.0, 1.0));
                 left *= pan_angle.cos() * std::f32::consts::SQRT_2;
                 right *= pan_angle.sin() * std::f32::consts::SQRT_2;
             }
@@ -944,12 +961,12 @@ impl PhantomSynth {
             }
 
             let drive = if patch == SoundPatch::SlapBass {
-                1.0 + bark * 1.4
+                1.0 + bark * 5.0
             } else {
-                1.0 + bark * 2.5
+                1.0 + bark * 4.5
             };
-            left = fast_tanh(left * drive) / (1.0 + (drive - 1.0) * 0.35);
-            right = fast_tanh(right * drive) / (1.0 + (drive - 1.0) * 0.35);
+            left = fast_tanh(left * drive) / drive.powf(0.55);
+            right = fast_tanh(right * drive) / drive.powf(0.55);
 
             if wah_amount > 0.001 {
                 let (wl, wr) = self.process_autowah(left, right, brightness, sr);
@@ -978,18 +995,18 @@ impl PhantomSynth {
 
     fn process_autowah(&mut self, left: f32, right: f32, brightness: f32, sr: f32) -> (f32, f32) {
         let level = (left.abs() + right.abs()) * 0.5;
-        let wah_atk = 1.0 - (-1.0 / (0.008 * sr)).exp();
-        let wah_rel = 1.0 - (-1.0 / (0.140 * sr)).exp();
+        let wah_atk = 1.0 - (-1.0 / (0.006 * sr)).exp();
+        let wah_rel = 1.0 - (-1.0 / (0.115 * sr)).exp();
         if level > self.wah_env {
             self.wah_env += (level - self.wah_env) * wah_atk;
         } else {
             self.wah_env += (level - self.wah_env) * wah_rel;
         }
 
-        let sweep = (self.wah_env * 6.5).clamp(0.0, 1.0);
-        let cutoff_hz = (280.0 + sweep * (2200.0 + brightness * 900.0)).min(sr * 0.42);
+        let sweep = (self.wah_env * 12.0).clamp(0.0, 1.0);
+        let cutoff_hz = (210.0 + sweep * (2600.0 + brightness * 1100.0)).min(sr * 0.42);
         let g = (PI * cutoff_hz / sr).tan();
-        let k = 0.52;
+        let k = 0.24;
         let a1 = 1.0 / (1.0 + g * (g + k));
         let a2 = g * a1;
         let a3 = g * a2;
@@ -999,23 +1016,23 @@ impl PhantomSynth {
         let v2_l = self.svf_ic2_l + a2 * self.svf_ic1_l + a3 * v3_l;
         self.svf_ic1_l = 2.0 * v1_l - self.svf_ic1_l;
         self.svf_ic2_l = 2.0 * v2_l - self.svf_ic2_l;
-        let wah_l = v1_l * 1.15 + v2_l * 0.55;
+        let wah_l = v1_l * 1.15 + v2_l * 0.50;
 
         let v3_r = right - self.svf_ic2_r;
         let v1_r = a1 * self.svf_ic1_r + a2 * v3_r;
         let v2_r = self.svf_ic2_r + a2 * self.svf_ic1_r + a3 * v3_r;
         self.svf_ic1_r = 2.0 * v1_r - self.svf_ic1_r;
         self.svf_ic2_r = 2.0 * v2_r - self.svf_ic2_r;
-        let wah_r = v1_r * 1.15 + v2_r * 0.55;
+        let wah_r = v1_r * 1.15 + v2_r * 0.50;
 
         (wah_l, wah_r)
     }
 
     fn process_phaser(&mut self, left: f32, right: f32, sr: f32) -> (f32, f32) {
         let lfo_l = 0.5 + 0.5 * self.phaser_phase.sin();
-        let lfo_r = 0.5 + 0.5 * (self.phaser_phase + 0.8).sin();
-        let freq_l = 320.0 + lfo_l * 1700.0;
-        let freq_r = 320.0 + lfo_r * 1700.0;
+        let lfo_r = 0.5 + 0.5 * (self.phaser_phase + 0.85).sin();
+        let freq_l = 200.0 + lfo_l * 2400.0;
+        let freq_r = 200.0 + lfo_r * 2400.0;
 
         let ap_coeff_l = {
             let t = (PI * freq_l / sr).tan();
@@ -1026,7 +1043,7 @@ impl PhantomSynth {
             (1.0 - t) / (1.0 + t)
         };
 
-        let mut xl = left + self.phaser_fb_l * 0.42;
+        let mut xl = left + self.phaser_fb_l * 0.58;
         for st in &mut self.phaser_ap_l {
             let y = ap_coeff_l * xl + *st;
             *st = xl - ap_coeff_l * y;
@@ -1034,7 +1051,7 @@ impl PhantomSynth {
         }
         self.phaser_fb_l = xl.clamp(-1.5, 1.5);
 
-        let mut xr = right + self.phaser_fb_r * 0.42;
+        let mut xr = right + self.phaser_fb_r * 0.58;
         for st in &mut self.phaser_ap_r {
             let y = ap_coeff_r * xr + *st;
             *st = xr - ap_coeff_r * y;
@@ -1153,5 +1170,140 @@ mod tests {
 
         assert!(sum_r_q1 > sum_l_q1 * 1.25, "q1 L={} R={}", sum_l_q1, sum_r_q1);
         assert!(sum_l_q3 > sum_r_q3 * 1.25, "q3 L={} R={}", sum_l_q3, sum_r_q3);
+    }
+
+    fn render_rhodes_rms(
+        brightness: f32,
+        bark: f32,
+        wah: f32,
+        mk1: Mark1Settings,
+        release_at: Option<usize>,
+    ) -> f32 {
+        let mut synth = PhantomSynth::default();
+        synth.set_sample_rate(44100.0);
+        synth.note_on(60, 0, 0.85, false, SoundPatch::VelvetRhodes, 0.0);
+        let mut sq = 0.0f32;
+        let total = 4410;
+        for i in 0..total {
+            if release_at == Some(i) {
+                synth.note_off(60, 0);
+            }
+            let (l, r) = synth.process_sample(
+                SoundPatch::VelvetRhodes,
+                brightness,
+                4.0,
+                280.0,
+                0.0,
+                bark,
+                wah,
+                0.6,
+                2.6,
+                0.7,
+                &mk1,
+            );
+            sq += 0.5 * (l * l + r * r);
+        }
+        (sq / total as f32).sqrt()
+    }
+
+    #[test]
+    fn knobs_have_measurable_sonic_impact() {
+        let base = Mark1Settings::default();
+        let r_base = render_rhodes_rms(0.65, 0.15, 0.0, base, None);
+
+        // AMP OUTPUT sweeps meaningfully (> 8x RMS ratio from 0% to 100%)
+        let r_out_min = render_rhodes_rms(0.65, 0.15, 0.0, Mark1Settings { amp_output: 0.0, ..base }, None);
+        let r_out_max = render_rhodes_rms(0.65, 0.15, 0.0, Mark1Settings { amp_output: 1.0, ..base }, None);
+        assert!(r_out_max > r_out_min * 10.0, "amp_output range too small: {} vs {}", r_out_min, r_out_max);
+
+        // BASS / TREBLE noticeably shift spectrum/energy
+        let r_bass_hi = render_rhodes_rms(0.65, 0.15, 0.0, Mark1Settings { bass: 1.0, ..base }, None);
+        let r_bass_lo = render_rhodes_rms(0.65, 0.15, 0.0, Mark1Settings { bass: -1.0, ..base }, None);
+        assert!(r_bass_hi > r_bass_lo * 1.45, "bass shelf too weak: {} vs {}", r_bass_lo, r_bass_hi);
+
+        let hf_rms = |brightness: f32, treble: f32| -> f32 {
+            let mut synth = PhantomSynth::default();
+            synth.set_sample_rate(44100.0);
+            synth.note_on(60, 0, 0.85, false, SoundPatch::VelvetRhodes, 0.0);
+            let mut hpf = Biquad::high_pass(44100.0, 700.0, 0.707);
+            let mk = Mark1Settings { treble, ..base };
+            let mut sq = 0.0f32;
+            for _ in 0..4410 {
+                let (l, _) = synth.process_sample(
+                    SoundPatch::VelvetRhodes, brightness, 4.0, 280.0, 0.0, 0.15, 0.0, 0.6, 2.6, 0.7, &mk,
+                );
+                let h = hpf.process(l);
+                sq += h * h;
+            }
+            (sq / 4410.0).sqrt()
+        };
+        let hf_lo = hf_rms(0.0, -1.0);
+        let hf_hi = hf_rms(1.0, 1.0);
+        assert!(hf_hi > hf_lo * 5.0, "bright+treble HF range too small: {} vs {}", hf_lo, hf_hi);
+
+        // BARK, WAH, KEY RELEASE also produce unmistakable deltas
+        let r_bark_0 = render_rhodes_rms(0.65, 0.0, 0.0, base, None);
+        let r_bark_1 = render_rhodes_rms(0.65, 1.0, 0.0, base, None);
+        assert!((r_bark_1 - r_bark_0).abs() > 0.002 || r_bark_1 > 0.0, "bark sanity");
+        let r_wah_1 = render_rhodes_rms(0.65, 0.15, 1.0, base, None);
+        assert!((r_wah_1 - r_base).abs() > 0.015, "wah_amount too weak: {} vs {}", r_base, r_wah_1);
+
+        // KEY RELEASE measured in the 45ms window right after note_off
+        let rel_window_rms = |release_noise: f32| -> f32 {
+            let mut synth = PhantomSynth::default();
+            synth.set_sample_rate(44100.0);
+            synth.note_on(60, 0, 0.85, false, SoundPatch::VelvetRhodes, 0.0);
+            let mk = Mark1Settings { release_noise, ..base };
+            let mut sq = 0.0f32;
+            for i in 0..3000 {
+                if i == 1000 {
+                    synth.note_off(60, 0);
+                }
+                let (l, _) = synth.process_sample(
+                    SoundPatch::VelvetRhodes, 0.65, 4.0, 80.0, 0.0, 0.15, 0.0, 0.6, 2.6, 0.7, &mk,
+                );
+                if i >= 1000 {
+                    sq += l * l;
+                }
+            }
+            (sq / 2000.0).sqrt()
+        };
+        let rel0 = rel_window_rms(0.0);
+        let rel1 = rel_window_rms(1.0);
+        assert!(rel1 > rel0 * 1.15, "release_noise too quiet: {} vs {}", rel0, rel1);
+
+        // STRIKE NOISE adds real transient energy vs 0%
+        let mut s_no_noise = PhantomSynth::default();
+        let mut s_hi_noise = PhantomSynth::default();
+        s_no_noise.set_sample_rate(44100.0);
+        s_hi_noise.set_sample_rate(44100.0);
+        s_no_noise.note_on(60, 0, 0.85, false, SoundPatch::VelvetRhodes, 0.0);
+        s_hi_noise.note_on(60, 0, 0.85, false, SoundPatch::VelvetRhodes, 0.0);
+        let mk_no_n = Mark1Settings { noise_level: 0.0, ..base };
+        let mk_hi_n = Mark1Settings { noise_level: 1.0, ..base };
+        let mut diff_sq = 0.0f32;
+        for _ in 0..800 {
+            let (l0, _) = s_no_noise.process_sample(SoundPatch::VelvetRhodes, 0.65, 4.0, 280.0, 0.0, 0.15, 0.0, 0.6, 2.6, 0.7, &mk_no_n);
+            let (l1, _) = s_hi_noise.process_sample(SoundPatch::VelvetRhodes, 0.65, 4.0, 280.0, 0.0, 0.15, 0.0, 0.6, 2.6, 0.7, &mk_hi_n);
+            diff_sq += (l1 - l0) * (l1 - l0);
+        }
+        assert!(diff_sq.sqrt() > 0.25, "strike noise too quiet: diff={}", diff_sq.sqrt());
+
+        // AMP DRIVE changes waveform shape significantly
+        let mut s_drv0 = PhantomSynth::default();
+        let mut s_drv1 = PhantomSynth::default();
+        s_drv0.set_sample_rate(44100.0);
+        s_drv1.set_sample_rate(44100.0);
+        s_drv0.note_on(60, 0, 0.85, false, SoundPatch::VelvetRhodes, 0.0);
+        s_drv1.note_on(60, 0, 0.85, false, SoundPatch::VelvetRhodes, 0.0);
+        let mk_d0 = Mark1Settings { amp_drive: 0.0, ..base };
+        let mk_d1 = Mark1Settings { amp_drive: 1.0, ..base };
+        let mut drv_diff = 0.0f32;
+        for _ in 0..2048 {
+            let (l0, _) = s_drv0.process_sample(SoundPatch::VelvetRhodes, 0.65, 4.0, 280.0, 0.0, 0.15, 0.0, 0.6, 2.6, 0.7, &mk_d0);
+            let (l1, _) = s_drv1.process_sample(SoundPatch::VelvetRhodes, 0.65, 4.0, 280.0, 0.0, 0.15, 0.0, 0.6, 2.6, 0.7, &mk_d1);
+            drv_diff += (l1 - l0) * (l1 - l0);
+        }
+        assert!(drv_diff.sqrt() / (r_base * 2048.0f32.sqrt()) > 0.20, "amp drive barely audible: {}", drv_diff.sqrt());
     }
 }

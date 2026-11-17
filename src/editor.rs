@@ -1087,8 +1087,13 @@ fn draw_starburst_zone(
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 let kw = (ui.available_width() - 12.0) / 2.0;
-                p5_knob(ui, "Pan Depth", &params.tremolo_depth, setter, P5_CYAN, kw);
-                p5_knob(ui, "Pan Rate", &params.tremolo_rate_hz, setter, P5_WHITE, kw);
+                if params.sound_patch.value() == SoundPatch::VelvetRhodes {
+                    p5_knob(ui, "Pan Depth", &params.mk1_pan_intensity, setter, P5_CYAN, kw);
+                    p5_knob(ui, "Pan Rate", &params.mk1_pan_speed, setter, P5_WHITE, kw);
+                } else {
+                    p5_knob(ui, "Pan Depth", &params.tremolo_depth, setter, P5_CYAN, kw);
+                    p5_knob(ui, "Pan Rate", &params.tremolo_rate_hz, setter, P5_WHITE, kw);
+                }
             });
             ui.add_space(4.0);
             ui.horizontal(|ui| {
