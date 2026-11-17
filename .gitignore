@@ -1,0 +1,4 @@
+target/
+release-staging/
+*.log
+.DS_Store

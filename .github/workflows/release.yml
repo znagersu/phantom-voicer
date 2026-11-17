@@ -1,0 +1,42 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Run tests
+        run: cargo test --lib
+
+      - name: Bundle VST3, CLAP, and Standalone EXE
+        run: cargo xtask bundle phantom_voicer --release
+
+      - name: Package release assets
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $ver = $tag.TrimStart('v', 'V')
+          New-Item -ItemType Directory -Force -Path release-staging | Out-Null
+          Compress-Archive -Path "target/bundled/phantom_voicer.vst3", "target/bundled/phantom_voicer.clap", "target/bundled/phantom_voicer.exe" -DestinationPath "release-staging/PhantomVoicer-win64.zip" -Force
+          @{
+            version = $ver
+            zip_url = "https://github.com/znagersu/phantom-voicer/releases/latest/download/PhantomVoicer-win64.zip"
+          } | ConvertTo-Json | Set-Content -Path "release-staging/latest.json" -Encoding UTF8
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-staging/PhantomVoicer-win64.zip
+            release-staging/latest.json
