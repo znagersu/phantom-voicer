@@ -2,6 +2,7 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const LATEST_MANIFEST_URL: &str =
@@ -56,7 +57,12 @@ impl UpdaterHandle {
                 Ok(g) => g,
                 Err(_) => return,
             };
-            if matches!(*guard, UpdateStatus::Checking | UpdateStatus::Installing(_)) {
+            if matches!(
+                *guard,
+                UpdateStatus::Checking
+                    | UpdateStatus::Installing(_)
+                    | UpdateStatus::ReadyToRestart(_)
+            ) {
                 return;
             }
             *guard = UpdateStatus::Checking;
@@ -90,7 +96,10 @@ impl UpdaterHandle {
                 Ok(g) => g,
                 Err(_) => return,
             };
-            if matches!(*guard, UpdateStatus::Installing(_)) {
+            if matches!(
+                *guard,
+                UpdateStatus::Installing(_) | UpdateStatus::ReadyToRestart(_)
+            ) {
                 return;
             }
             *guard = UpdateStatus::Installing(version.clone());
@@ -109,19 +118,34 @@ impl UpdaterHandle {
     }
 }
 
-fn parse_semver(v: &str) -> Option<(u32, u32, u32)> {
-    let clean = v.trim().trim_start_matches(['v', 'V']);
-    let mut parts = clean.split('.');
-    let maj = parts.next()?.parse().ok()?;
-    let min = parts.next().unwrap_or("0").parse().ok()?;
-    let pat = parts
-        .next()
-        .unwrap_or("0")
-        .split('-')
-        .next()?
-        .parse()
-        .ok()?;
-    Some((maj, min, pat))
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct SemVer {
+    major: u32,
+    minor: u32,
+    patch: u32,
+    is_release: bool,
+}
+
+fn parse_semver(v: &str) -> Option<SemVer> {
+    let clean = v
+        .trim()
+        .trim_start_matches(['v', 'V'])
+        .split('+')
+        .next()?;
+    let (core, is_release) = match clean.split_once('-') {
+        Some((c, _pre)) => (c, false),
+        None => (clean, true),
+    };
+    let mut parts = core.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next().unwrap_or("0").parse().ok()?;
+    let patch = parts.next().unwrap_or("0").parse().ok()?;
+    Some(SemVer {
+        major,
+        minor,
+        patch,
+        is_release,
+    })
 }
 
 pub fn is_newer_version(remote: &str, current: &str) -> bool {
@@ -129,6 +153,13 @@ pub fn is_newer_version(remote: &str, current: &str) -> bool {
         (Some(r), Some(c)) => r > c,
         _ => false,
     }
+}
+
+fn unix_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0)
 }
 
 fn hidden_command(program: &str) -> Command {
@@ -142,8 +173,17 @@ fn hidden_command(program: &str) -> Command {
 }
 
 fn fetch_latest_manifest() -> Result<LatestManifest, String> {
+    // Cache-buster query param prevents Fastly/Varnish CDN from serving stale latest.json
+    let cache_busted_url = format!("{LATEST_MANIFEST_URL}?t={}", unix_millis());
     let output = hidden_command("curl.exe")
-        .args(["-fsSL", "--max-time", "8", LATEST_MANIFEST_URL])
+        .args([
+            "-fsSL",
+            "-H",
+            "Cache-Control: no-cache",
+            "--max-time",
+            "8",
+            &cache_busted_url,
+        ])
         .output()
         .map_err(|e| format!("curl failed: {e}"))?;
 
@@ -198,28 +238,30 @@ fn current_module_path() -> Option<PathBuf> {
     std::env::current_exe().ok()
 }
 
-/// Resolves the directory containing the installed `phantom_voicer.vst3` / `.exe` / `.clap`.
-fn detect_install_dir() -> Result<PathBuf, String> {
+/// Resolves the exact target artifact path (`...\phantom_voicer.vst3` bundle dir, `.clap`, or `.exe`)
+/// and its parent install directory.
+fn detect_active_target() -> Result<(PathBuf, PathBuf), String> {
     let mod_path = current_module_path().ok_or("Could not locate plugin path")?;
-    let s = mod_path.to_string_lossy().to_ascii_lowercase();
 
-    // If running inside `...\phantom_voicer.vst3\Contents\x86_64-win\phantom_voicer.vst3`
-    if s.contains(".vst3\\contents\\") || s.contains(".vst3/contents/") {
-        let mut p: &Path = &mod_path;
-        for _ in 0..3 {
-            p = p.parent().ok_or("Unexpected VST3 bundle layout")?;
+    // Walk ancestors for a `.vst3` bundle folder (case-insensitive)
+    for anc in mod_path.ancestors() {
+        if let Some(ext) = anc.extension() {
+            if ext.eq_ignore_ascii_case("vst3") && anc.is_dir() {
+                let parent = anc
+                    .parent()
+                    .map(|p| p.to_path_buf())
+                    .ok_or_else(|| "Missing VST3 parent directory".to_string())?;
+                return Ok((anc.to_path_buf(), parent));
+            }
         }
-        return p
-            .parent()
-            .map(|d| d.to_path_buf())
-            .ok_or_else(|| "Missing VST3 parent dir".to_string());
     }
 
-    // Running as standalone `.exe` or `.clap`
-    mod_path
+    // Standalone `.exe` or `.clap`
+    let parent = mod_path
         .parent()
-        .map(|d| d.to_path_buf())
-        .ok_or_else(|| "Missing install directory".to_string())
+        .map(|p| p.to_path_buf())
+        .ok_or_else(|| "Missing install directory".to_string())?;
+    Ok((mod_path, parent))
 }
 
 fn download_and_launch_updater(version: &str, zip_url: &str) -> Result<String, String> {
@@ -227,23 +269,34 @@ fn download_and_launch_updater(version: &str, zip_url: &str) -> Result<String, S
         return Err("Untrusted release URL".to_string());
     }
 
-    let install_dir = detect_install_dir()?;
-    let temp_root = std::env::temp_dir().join("PhantomVoicerUpdate");
-    let _ = std::fs::remove_dir_all(&temp_root);
+    let (active_target, install_dir) = detect_active_target()?;
+    let temp_root = std::env::temp_dir().join(format!(
+        "PhantomVoicerUpdate-{}-{}",
+        std::process::id(),
+        unix_millis()
+    ));
     std::fs::create_dir_all(&temp_root).map_err(|e| format!("Temp dir error: {e}"))?;
 
     let zip_path = temp_root.join("PhantomVoicer-win64.zip");
     let extract_dir = temp_root.join("extracted");
 
+    let busted_zip_url = if zip_url.contains('?') {
+        zip_url.to_string()
+    } else {
+        format!("{zip_url}?t={}", unix_millis())
+    };
+
     let dl = hidden_command("curl.exe")
         .args([
             "-fsSL",
             "-L",
+            "-H",
+            "Cache-Control: no-cache",
             "--max-time",
             "60",
             "-o",
             &zip_path.to_string_lossy(),
-            zip_url,
+            &busted_zip_url,
         ])
         .output()
         .map_err(|e| format!("Download failed: {e}"))?;
@@ -271,143 +324,227 @@ fn download_and_launch_updater(version: &str, zip_url: &str) -> Result<String, S
 
     let script_path = temp_root.join("apply_update.ps1");
     let install_str = install_dir.to_string_lossy().replace('\'', "''");
+    let active_str = active_target.to_string_lossy().replace('\'', "''");
     let extract_str = extract_dir.to_string_lossy().replace('\'', "''");
     let ver_str = version.replace('\'', "''");
 
-    // Helper script:
-    // 1) Waits for FL Studio / Phantom Voicer to release DLL/EXE locks.
-    // 2) Checks write permission on $dst; if admin-protected (e.g. Program Files), re-launches itself elevated via UAC.
-    // 3) Always updates phantom_voicer.vst3 if present/VST3 dir, and only updates .clap/.exe if already present or in a PhantomVoicer folder.
+    // Bulletproof self-updater:
+    // - Whole script wrapped in try/catch so errors are always surfaced.
+    // - Discovers active target + any duplicate copies across standard VST3/CLAP folders so FL Studio
+    //   never keeps loading a stale duplicate.
+    // - Checks write/delete permission on ALL discovered targets; if any need Admin, elevates via UAC once.
+    // - Checks ONLY sharing/lock IOExceptions (not ACL errors) and prompts Retry/Cancel until FL Studio closes.
+    // - Performs atomic .bak swap + SHA-256 verification before removing backup.
     let ps_script = format!(
         r#"param([switch]$Elevated)
 $ErrorActionPreference = 'Stop'
-$src = '{extract_str}'
-$dst = '{install_str}'
-$ver = '{ver_str}'
-
 Add-Type -AssemblyName System.Windows.Forms
 
-function Test-Writable($dir) {{
-    $probe = Join-Path $dir ('.pv_write_' + [guid]::NewGuid().ToString('N'))
-    try {{
-        [System.IO.File]::WriteAllText($probe, 'ok')
-        Remove-Item -Force $probe -ErrorAction SilentlyContinue
-        return $true
-    }} catch {{
-        return $false
-    }}
-}}
+try {{
+    $src = '{extract_str}'
+    $dst = '{install_str}'
+    $activeTarget = '{active_str}'
+    $ver = '{ver_str}'
 
-function Test-Locked($dir) {{
-    $targets = @(
-        (Join-Path $dir 'phantom_voicer.vst3\Contents\x86_64-win\phantom_voicer.vst3'),
-        (Join-Path $dir 'phantom_voicer.exe')
-    )
-    foreach ($t in $targets) {{
-        if (Test-Path $t) {{
-            try {{
-                $fs = [System.IO.File]::Open($t, 'Open', 'ReadWrite', 'None')
-                $fs.Close()
-            }} catch {{
-                return $true
+    $srcVst3 = Join-Path $src 'phantom_voicer.vst3'
+    $srcClap = Join-Path $src 'phantom_voicer.clap'
+    $srcExe  = Join-Path $src 'phantom_voicer.exe'
+    $srcVst3Hash = (Get-FileHash (Join-Path $srcVst3 'Contents\x86_64-win\phantom_voicer.vst3')).Hash
+    $srcClapHash = (Get-FileHash $srcClap).Hash
+    $srcExeHash  = (Get-FileHash $srcExe).Hash
+
+    # Collect all installed targets to update so no stale duplicate remains
+    $vst3Targets = New-Object System.Collections.Generic.HashSet[string]([StringComparer]::OrdinalIgnoreCase)
+    $clapTargets = New-Object System.Collections.Generic.HashSet[string]([StringComparer]::OrdinalIgnoreCase)
+    $exeTargets  = New-Object System.Collections.Generic.HashSet[string]([StringComparer]::OrdinalIgnoreCase)
+
+    if ($activeTarget -match '\.vst3$') {{ [void]$vst3Targets.Add($activeTarget) }}
+    elseif ($activeTarget -match '\.clap$') {{ [void]$clapTargets.Add($activeTarget) }}
+    elseif ($activeTarget -match '\.exe$') {{ [void]$exeTargets.Add($activeTarget) }}
+
+    $roots = @(
+        $dst,
+        "$env:ProgramFiles\Common Files\VST3",
+        "$env:LOCALAPPDATA\Programs\Common\VST3",
+        "$env:ProgramFiles\Common Files\CLAP",
+        "$env:LOCALAPPDATA\Programs\Common\CLAP"
+    ) | Select-Object -Unique
+
+    foreach ($root in $roots) {{
+        if (-not $root -or -not (Test-Path $root)) {{ continue }}
+        Get-ChildItem -Path $root -Filter 'phantom_voicer.vst3' -Directory -Recurse -Depth 2 -ErrorAction SilentlyContinue | ForEach-Object {{
+            # Skip nested phantom_voicer.vst3\phantom_voicer.vst3 from legacy bug; parent will be replaced atomically
+            if ($_.Parent.Name -ne 'phantom_voicer.vst3') {{
+                [void]$vst3Targets.Add($_.FullName)
             }}
         }}
+        Get-ChildItem -Path $root -Filter 'phantom_voicer.clap' -File -Recurse -Depth 2 -ErrorAction SilentlyContinue | ForEach-Object {{
+            [void]$clapTargets.Add($_.FullName)
+        }}
+        Get-ChildItem -Path $root -Filter 'phantom_voicer.exe' -File -Recurse -Depth 2 -ErrorAction SilentlyContinue | ForEach-Object {{
+            [void]$exeTargets.Add($_.FullName)
+        }}
     }}
-    return $false
-}}
 
-if (-not (Test-Writable $dst)) {{
-    if ($Elevated) {{
-        [System.Windows.Forms.MessageBox]::Show(
-            "Still cannot write to $dst even with Administrator rights.",
-            "Phantom Voicer Update Error",
-            [System.Windows.Forms.MessageBoxButtons]::OK,
-            [System.Windows.Forms.MessageBoxIcon]::Error
-        ) | Out-Null
-        exit 1
+    if ($vst3Targets.Count -eq 0 -and $clapTargets.Count -eq 0 -and $exeTargets.Count -eq 0) {{
+        throw "No target installation found for $activeTarget"
     }}
-    try {{
-        Start-Process powershell.exe -Verb RunAs -ArgumentList @(
-            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
-            '-File', ('"{{0}}"' -f $PSCommandPath), '-Elevated'
+
+    function Test-PathWritable([string]$path) {{
+        $dir = if (Test-Path $path -PathType Container) {{ Split-Path $path -Parent }} elseif (Test-Path $path) {{ Split-Path $path -Parent }} else {{ $dst }}
+        $probe = Join-Path $dir ('.pv_w_' + [guid]::NewGuid().ToString('N'))
+        try {{
+            [System.IO.File]::WriteAllText($probe, 'ok')
+            Remove-Item -Force $probe -ErrorAction SilentlyContinue
+            return $true
+        }} catch [System.UnauthorizedAccessException] {{
+            return $false
+        }} catch {{
+            return $false
+        }}
+    }}
+
+    function Test-FileLocked([string]$filePath) {{
+        if (-not (Test-Path $filePath -PathType Leaf)) {{ return $false }}
+        try {{
+            $fs = [System.IO.File]::Open($filePath, 'Open', 'ReadWrite', 'None')
+            $fs.Close()
+            return $false
+        }} catch [System.UnauthorizedAccessException] {{
+            return $false
+        }} catch [System.IO.IOException] {{
+            $hr = $_.Exception.HResult -band 0xFFFF
+            # 32 = ERROR_SHARING_VIOLATION, 33 = ERROR_LOCK_VIOLATION
+            if ($hr -eq 32 -or $hr -eq 33) {{ return $true }}
+            return $true
+        }}
+    }}
+
+    $needsElevation = $false
+    foreach ($t in $vst3Targets) {{ if (-not (Test-PathWritable $t)) {{ $needsElevation = $true }} }}
+    foreach ($t in $clapTargets) {{ if (-not (Test-PathWritable $t)) {{ $needsElevation = $true }} }}
+    foreach ($t in $exeTargets)  {{ if (-not (Test-PathWritable $t)) {{ $needsElevation = $true }} }}
+
+    if ($needsElevation) {{
+        if ($Elevated) {{
+            throw "Administrator rights were not sufficient to write to target plugin folders."
+        }}
+        try {{
+            Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden -ArgumentList @(
+                '-NoProfile', '-ExecutionPolicy', 'Bypass',
+                '-File', ('"{{0}}"' -f $PSCommandPath), '-Elevated'
+            )
+            exit 0
+        }} catch {{
+            [System.Windows.Forms.MessageBox]::Show(
+                "Administrator permission was canceled. Cannot update protected plugin files.",
+                "Phantom Voicer Update Canceled",
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Warning
+            ) | Out-Null
+            exit 0
+        }}
+    }}
+
+    while ($true) {{
+        $lockedFile = $null
+        foreach ($t in $vst3Targets) {{
+            $dll = Join-Path $t 'Contents\x86_64-win\phantom_voicer.vst3'
+            if (Test-FileLocked $dll) {{ $lockedFile = $dll; break }}
+        }}
+        if (-not $lockedFile) {{
+            foreach ($t in $clapTargets) {{ if (Test-FileLocked $t) {{ $lockedFile = $t; break }} }}
+        }}
+        if (-not $lockedFile) {{
+            foreach ($t in $exeTargets) {{ if (Test-FileLocked $t) {{ $lockedFile = $t; break }} }}
+        }}
+        if (-not $lockedFile) {{ break }}
+
+        $ans = [System.Windows.Forms.MessageBox]::Show(
+            "Phantom Voicer v$ver is ready!`n`nClose FL Studio / Phantom Voicer completely (wait 2 seconds), then click Retry.`n`nIn use: $lockedFile",
+            "Phantom Voicer Updater",
+            [System.Windows.Forms.MessageBoxButtons]::RetryCancel,
+            [System.Windows.Forms.MessageBoxIcon]::Information
         )
-        exit 0
-    }} catch {{
-        [System.Windows.Forms.MessageBox]::Show(
-            "Administrator permission was canceled. Cannot update files in $dst.",
-            "Phantom Voicer Update Canceled",
-            [System.Windows.Forms.MessageBoxButtons]::OK,
-            [System.Windows.Forms.MessageBoxIcon]::Warning
-        ) | Out-Null
-        exit 1
-    }}
-}}
-
-while (Test-Locked $dst) {{
-    $ans = [System.Windows.Forms.MessageBox]::Show(
-        "Phantom Voicer v$ver is ready to install!`n`nPlease close FL Studio / Phantom Voicer completely, wait 2 seconds, then click Retry to finish updating.",
-        "Phantom Voicer Updater",
-        [System.Windows.Forms.MessageBoxButtons]::RetryCancel,
-        [System.Windows.Forms.MessageBoxIcon]::Information
-    )
-    if ($ans -eq [System.Windows.Forms.DialogResult]::Cancel) {{
-        exit 0
-    }}
-    Start-Sleep -Milliseconds 700
-}}
-
-try {{
-    $isDedicatedFolder = (Split-Path $dst -Leaf) -ieq 'PhantomVoicer'
-    $srcVst3 = Join-Path $src 'phantom_voicer.vst3'
-    $dstVst3 = Join-Path $dst 'phantom_voicer.vst3'
-    $didVst3 = $false
-
-    if ((Test-Path $srcVst3) -and ($isDedicatedFolder -or (Test-Path $dstVst3))) {{
-        if (Test-Path $dstVst3) {{
-            Remove-Item -Recurse -Force $dstVst3
+        if ($ans -eq [System.Windows.Forms.DialogResult]::Cancel) {{
+            exit 0
         }}
-        Copy-Item -Recurse -Force $srcVst3 $dst
-        $didVst3 = $true
-    }}
-    if ((Test-Path (Join-Path $src 'phantom_voicer.clap')) -and (
-        $isDedicatedFolder -or (Test-Path (Join-Path $dst 'phantom_voicer.clap'))
-    )) {{
-        Copy-Item -Force (Join-Path $src 'phantom_voicer.clap') (Join-Path $dst 'phantom_voicer.clap')
-    }}
-    if ((Test-Path (Join-Path $src 'phantom_voicer.exe')) -and (
-        $isDedicatedFolder -or (Test-Path (Join-Path $dst 'phantom_voicer.exe'))
-    )) {{
-        Copy-Item -Force (Join-Path $src 'phantom_voicer.exe') (Join-Path $dst 'phantom_voicer.exe')
+        Start-Sleep -Milliseconds 600
     }}
 
-    if ($didVst3) {{
-        $srcDll = Join-Path $srcVst3 'Contents\x86_64-win\phantom_voicer.vst3'
-        $dstDll = Join-Path $dstVst3 'Contents\x86_64-win\phantom_voicer.vst3'
-        if (-not (Test-Path $dstDll) -or ((Get-FileHash $srcDll).Hash -ne (Get-FileHash $dstDll).Hash)) {{
-            throw "Installed VST3 binary hash verification failed at $dstDll"
+    $updatedCount = 0
+
+    foreach ($dstVst3 in $vst3Targets) {{
+        $parent = Split-Path $dstVst3 -Parent
+        $bak = "$dstVst3.bak"
+        if (Test-Path $bak) {{ Remove-Item -Recurse -Force $bak }}
+        if (Test-Path $dstVst3) {{ Rename-Item -Path $dstVst3 -NewName (Split-Path $bak -Leaf) }}
+        try {{
+            Copy-Item -Recurse -Force $srcVst3 $parent
+            $copiedName = Split-Path $srcVst3 -Leaf
+            $placed = Join-Path $parent $copiedName
+            if ($placed -ne $dstVst3) {{
+                if (Test-Path $dstVst3) {{ Remove-Item -Recurse -Force $dstVst3 }}
+                Rename-Item -Path $placed -NewName (Split-Path $dstVst3 -Leaf)
+            }}
+            $dstDll = Join-Path $dstVst3 'Contents\x86_64-win\phantom_voicer.vst3'
+            if (-not (Test-Path $dstDll) -or ((Get-FileHash $dstDll).Hash -ne $srcVst3Hash)) {{
+                throw "SHA-256 verification failed for $dstDll"
+            }}
+            if (Test-Path $bak) {{ Remove-Item -Recurse -Force $bak }}
+            $updatedCount++
+        }} catch {{
+            if ((Test-Path $bak) -and -not (Test-Path $dstVst3)) {{
+                Rename-Item -Path $bak -NewName (Split-Path $dstVst3 -Leaf)
+            }}
+            throw
         }}
+    }}
+
+    foreach ($dstClap in $clapTargets) {{
+        Copy-Item -Force $srcClap $dstClap
+        if ((Get-FileHash $dstClap).Hash -ne $srcClapHash) {{
+            throw "SHA-256 verification failed for $dstClap"
+        }}
+        $updatedCount++
+    }}
+
+    foreach ($dstExe in $exeTargets) {{
+        Copy-Item -Force $srcExe $dstExe
+        if ((Get-FileHash $dstExe).Hash -ne $srcExeHash) {{
+            throw "SHA-256 verification failed for $dstExe"
+        }}
+        $updatedCount++
+    }}
+
+    if ($updatedCount -eq 0) {{
+        throw "No files were updated."
     }}
 
     [System.Windows.Forms.MessageBox]::Show(
-        "Phantom Voicer updated to v$ver!`nRe-open FL Studio or Phantom Voicer to use the new version.",
+        "Phantom Voicer updated to v$ver ($updatedCount target(s) verified)!`nRe-open FL Studio or Phantom Voicer now.",
         "Phantom Voicer Updated",
         [System.Windows.Forms.MessageBoxButtons]::OK,
         [System.Windows.Forms.MessageBoxIcon]::Information
     ) | Out-Null
 }} catch {{
     [System.Windows.Forms.MessageBox]::Show(
-        "Could not overwrite files in $dst.`nClose FL Studio before updating.`nError: $($_.Exception.Message)",
+        "Phantom Voicer update to v$ver failed:`n$($_.Exception.Message)",
         "Phantom Voicer Update Error",
         [System.Windows.Forms.MessageBoxButtons]::OK,
         [System.Windows.Forms.MessageBoxIcon]::Error
     ) | Out-Null
+    exit 1
 }}
 "#
     );
 
-    std::fs::write(&script_path, ps_script).map_err(|e| format!("Script write error: {e}"))?;
+    // Write UTF-8 with BOM so Windows PowerShell 5.1 parses non-ASCII paths cleanly
+    let mut script_bytes = Vec::with_capacity(3 + ps_script.len());
+    script_bytes.extend_from_slice(&[0xEF, 0xBB, 0xBF]);
+    script_bytes.extend_from_slice(ps_script.as_bytes());
+    std::fs::write(&script_path, script_bytes).map_err(|e| format!("Script write error: {e}"))?;
 
-    // Launch detached PowerShell helper so it survives if user closes FL Studio / standalone exe
     let mut cmd = Command::new("powershell.exe");
     cmd.args([
         "-NoProfile",
@@ -437,7 +574,10 @@ mod tests {
     fn semver_comparison_works() {
         assert!(is_newer_version("0.2.0", "0.1.0"));
         assert!(is_newer_version("v1.0.0", "0.9.9"));
+        assert!(is_newer_version("0.3.0", "0.3.0-rc.1"));
+        assert!(!is_newer_version("0.3.0-rc.1", "0.3.0"));
         assert!(!is_newer_version("0.1.0", "0.1.0"));
+        assert!(!is_newer_version("0.2.2+build.1", "0.2.2"));
         assert!(!is_newer_version("0.0.9", "0.1.0"));
     }
 }

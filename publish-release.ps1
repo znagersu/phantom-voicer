@@ -25,11 +25,19 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $src = Join-Path $PSScriptRoot "target\bundled"
 $vst3Dest = "$env:LOCALAPPDATA\Programs\Common\VST3\PhantomVoicer"
 $dlDest = "$env:USERPROFILE\Downloads\PhantomVoicer"
+$clapUser = "$env:LOCALAPPDATA\Programs\Common\CLAP\phantom_voicer.clap"
 New-Item -ItemType Directory -Force -Path $vst3Dest, $dlDest | Out-Null
-Remove-Item -Recurse -Force (Join-Path $vst3Dest "phantom_voicer.vst3") -ErrorAction SilentlyContinue
-Remove-Item -Recurse -Force (Join-Path $dlDest "phantom_voicer.vst3") -ErrorAction SilentlyContinue
+
+$vst3Old = Join-Path $vst3Dest "phantom_voicer.vst3"
+$dlOld = Join-Path $dlDest "phantom_voicer.vst3"
+if (Test-Path $vst3Old) { Remove-Item -Recurse -Force $vst3Old }
+if (Test-Path $dlOld) { Remove-Item -Recurse -Force $dlOld }
+
 Copy-Item -Recurse -Force "$src\*" $vst3Dest
 Copy-Item -Recurse -Force "$src\*" $dlDest
+if (Test-Path $clapUser) {
+    Copy-Item -Force (Join-Path $src "phantom_voicer.clap") $clapUser
+}
 
 $staging = Join-Path $PSScriptRoot "release-staging"
 Remove-Item -Recurse -Force $staging -ErrorAction SilentlyContinue
@@ -40,9 +48,10 @@ $manifestPath = Join-Path $staging "latest.json"
 
 Compress-Archive -Path "$src\phantom_voicer.vst3", "$src\phantom_voicer.clap", "$src\phantom_voicer.exe" -DestinationPath $zipPath -Force
 
+# Pin zip_url directly to the exact release tag so CDN caches never mix versions
 $manifest = @{
     version = $cleanVersion
-    zip_url = "https://github.com/znagersu/phantom-voicer/releases/latest/download/PhantomVoicer-win64.zip"
+    zip_url = "https://github.com/znagersu/phantom-voicer/releases/download/$tag/PhantomVoicer-win64.zip"
 } | ConvertTo-Json
 [System.IO.File]::WriteAllText($manifestPath, $manifest, [System.Text.UTF8Encoding]::new($false))
 
