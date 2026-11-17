@@ -329,7 +329,7 @@ if (-not (Test-Writable $dst)) {{
     try {{
         Start-Process powershell.exe -Verb RunAs -ArgumentList @(
             '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
-            '-File', "`"$PSCommandPath`"", '-Elevated'
+            '-File', ('"{{0}}"' -f $PSCommandPath), '-Elevated'
         )
         exit 0
     }} catch {{
@@ -343,27 +343,31 @@ if (-not (Test-Writable $dst)) {{
     }}
 }}
 
-$warned = $false
-for ($i = 0; $i -lt 90; $i++) {{
-    if (-not (Test-Locked $dst)) {{ break }}
-    if (-not $warned) {{
-        $warned = $true
-        [System.Windows.Forms.MessageBox]::Show(
-            "Phantom Voicer v$ver is ready! Close FL Studio / Phantom Voicer now, then click OK to finish installing.",
-            "Phantom Voicer Updater",
-            [System.Windows.Forms.MessageBoxButtons]::OK,
-            [System.Windows.Forms.MessageBoxIcon]::Information
-        ) | Out-Null
+while (Test-Locked $dst) {{
+    $ans = [System.Windows.Forms.MessageBox]::Show(
+        "Phantom Voicer v$ver is ready to install!`n`nPlease close FL Studio / Phantom Voicer completely, wait 2 seconds, then click Retry to finish updating.",
+        "Phantom Voicer Updater",
+        [System.Windows.Forms.MessageBoxButtons]::RetryCancel,
+        [System.Windows.Forms.MessageBoxIcon]::Information
+    )
+    if ($ans -eq [System.Windows.Forms.DialogResult]::Cancel) {{
+        exit 0
     }}
-    Start-Sleep -Seconds 1
+    Start-Sleep -Milliseconds 700
 }}
 
 try {{
     $isDedicatedFolder = (Split-Path $dst -Leaf) -ieq 'PhantomVoicer'
-    if ((Test-Path (Join-Path $src 'phantom_voicer.vst3')) -and (
-        $isDedicatedFolder -or (Test-Path (Join-Path $dst 'phantom_voicer.vst3'))
-    )) {{
-        Copy-Item -Recurse -Force (Join-Path $src 'phantom_voicer.vst3') (Join-Path $dst 'phantom_voicer.vst3')
+    $srcVst3 = Join-Path $src 'phantom_voicer.vst3'
+    $dstVst3 = Join-Path $dst 'phantom_voicer.vst3'
+    $didVst3 = $false
+
+    if ((Test-Path $srcVst3) -and ($isDedicatedFolder -or (Test-Path $dstVst3))) {{
+        if (Test-Path $dstVst3) {{
+            Remove-Item -Recurse -Force $dstVst3
+        }}
+        Copy-Item -Recurse -Force $srcVst3 $dst
+        $didVst3 = $true
     }}
     if ((Test-Path (Join-Path $src 'phantom_voicer.clap')) -and (
         $isDedicatedFolder -or (Test-Path (Join-Path $dst 'phantom_voicer.clap'))
@@ -375,8 +379,17 @@ try {{
     )) {{
         Copy-Item -Force (Join-Path $src 'phantom_voicer.exe') (Join-Path $dst 'phantom_voicer.exe')
     }}
+
+    if ($didVst3) {{
+        $srcDll = Join-Path $srcVst3 'Contents\x86_64-win\phantom_voicer.vst3'
+        $dstDll = Join-Path $dstVst3 'Contents\x86_64-win\phantom_voicer.vst3'
+        if (-not (Test-Path $dstDll) -or ((Get-FileHash $srcDll).Hash -ne (Get-FileHash $dstDll).Hash)) {{
+            throw "Installed VST3 binary hash verification failed at $dstDll"
+        }}
+    }}
+
     [System.Windows.Forms.MessageBox]::Show(
-        "Phantom Voicer updated to v$ver! Re-open FL Studio or Phantom Voicer to use the new version.",
+        "Phantom Voicer updated to v$ver!`nRe-open FL Studio or Phantom Voicer to use the new version.",
         "Phantom Voicer Updated",
         [System.Windows.Forms.MessageBoxButtons]::OK,
         [System.Windows.Forms.MessageBoxIcon]::Information

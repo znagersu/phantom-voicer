@@ -26,6 +26,8 @@ $src = Join-Path $PSScriptRoot "target\bundled"
 $vst3Dest = "$env:LOCALAPPDATA\Programs\Common\VST3\PhantomVoicer"
 $dlDest = "$env:USERPROFILE\Downloads\PhantomVoicer"
 New-Item -ItemType Directory -Force -Path $vst3Dest, $dlDest | Out-Null
+Remove-Item -Recurse -Force (Join-Path $vst3Dest "phantom_voicer.vst3") -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force (Join-Path $dlDest "phantom_voicer.vst3") -ErrorAction SilentlyContinue
 Copy-Item -Recurse -Force "$src\*" $vst3Dest
 Copy-Item -Recurse -Force "$src\*" $dlDest
 
