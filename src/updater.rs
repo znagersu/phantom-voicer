@@ -274,13 +274,29 @@ fn download_and_launch_updater(version: &str, zip_url: &str) -> Result<String, S
     let extract_str = extract_dir.to_string_lossy().replace('\'', "''");
     let ver_str = version.replace('\'', "''");
 
-    // Helper script waits up to 90s for FL Studio / Phantom Voicer to release file locks,
-    // elevates via UAC if installing into Program Files, copies files, and notifies user.
+    // Helper script:
+    // 1) Waits for FL Studio / Phantom Voicer to release DLL/EXE locks.
+    // 2) Checks write permission on $dst; if admin-protected (e.g. Program Files), re-launches itself elevated via UAC.
+    // 3) Always updates phantom_voicer.vst3 if present/VST3 dir, and only updates .clap/.exe if already present or in a PhantomVoicer folder.
     let ps_script = format!(
-        r#"$ErrorActionPreference = 'Stop'
+        r#"param([switch]$Elevated)
+$ErrorActionPreference = 'Stop'
 $src = '{extract_str}'
 $dst = '{install_str}'
 $ver = '{ver_str}'
+
+Add-Type -AssemblyName System.Windows.Forms
+
+function Test-Writable($dir) {{
+    $probe = Join-Path $dir ('.pv_write_' + [guid]::NewGuid().ToString('N'))
+    try {{
+        [System.IO.File]::WriteAllText($probe, 'ok')
+        Remove-Item -Force $probe -ErrorAction SilentlyContinue
+        return $true
+    }} catch {{
+        return $false
+    }}
+}}
 
 function Test-Locked($dir) {{
     $targets = @(
@@ -300,14 +316,40 @@ function Test-Locked($dir) {{
     return $false
 }}
 
-Add-Type -AssemblyName System.Windows.Forms
+if (-not (Test-Writable $dst)) {{
+    if ($Elevated) {{
+        [System.Windows.Forms.MessageBox]::Show(
+            "Still cannot write to $dst even with Administrator rights.",
+            "Phantom Voicer Update Error",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Error
+        ) | Out-Null
+        exit 1
+    }}
+    try {{
+        Start-Process powershell.exe -Verb RunAs -ArgumentList @(
+            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
+            '-File', "`"$PSCommandPath`"", '-Elevated'
+        )
+        exit 0
+    }} catch {{
+        [System.Windows.Forms.MessageBox]::Show(
+            "Administrator permission was canceled. Cannot update files in $dst.",
+            "Phantom Voicer Update Canceled",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Warning
+        ) | Out-Null
+        exit 1
+    }}
+}}
+
 $warned = $false
 for ($i = 0; $i -lt 90; $i++) {{
     if (-not (Test-Locked $dst)) {{ break }}
     if (-not $warned) {{
         $warned = $true
         [System.Windows.Forms.MessageBox]::Show(
-            "Phantom Voicer v$ver is ready! Please close FL Studio / Phantom Voicer now, then click OK to finish installing.",
+            "Phantom Voicer v$ver is ready! Close FL Studio / Phantom Voicer now, then click OK to finish installing.",
             "Phantom Voicer Updater",
             [System.Windows.Forms.MessageBoxButtons]::OK,
             [System.Windows.Forms.MessageBoxIcon]::Information
@@ -317,13 +359,20 @@ for ($i = 0; $i -lt 90; $i++) {{
 }}
 
 try {{
-    if (Test-Path (Join-Path $src 'phantom_voicer.vst3')) {{
+    $isDedicatedFolder = (Split-Path $dst -Leaf) -ieq 'PhantomVoicer'
+    if ((Test-Path (Join-Path $src 'phantom_voicer.vst3')) -and (
+        $isDedicatedFolder -or (Test-Path (Join-Path $dst 'phantom_voicer.vst3'))
+    )) {{
         Copy-Item -Recurse -Force (Join-Path $src 'phantom_voicer.vst3') (Join-Path $dst 'phantom_voicer.vst3')
     }}
-    if (Test-Path (Join-Path $src 'phantom_voicer.clap')) {{
+    if ((Test-Path (Join-Path $src 'phantom_voicer.clap')) -and (
+        $isDedicatedFolder -or (Test-Path (Join-Path $dst 'phantom_voicer.clap'))
+    )) {{
         Copy-Item -Force (Join-Path $src 'phantom_voicer.clap') (Join-Path $dst 'phantom_voicer.clap')
     }}
-    if (Test-Path (Join-Path $src 'phantom_voicer.exe')) {{
+    if ((Test-Path (Join-Path $src 'phantom_voicer.exe')) -and (
+        $isDedicatedFolder -or (Test-Path (Join-Path $dst 'phantom_voicer.exe'))
+    )) {{
         Copy-Item -Force (Join-Path $src 'phantom_voicer.exe') (Join-Path $dst 'phantom_voicer.exe')
     }}
     [System.Windows.Forms.MessageBox]::Show(
@@ -334,7 +383,7 @@ try {{
     ) | Out-Null
 }} catch {{
     [System.Windows.Forms.MessageBox]::Show(
-        "Could not overwrite files in $dst.`nClose FL Studio and run as Administrator if installed in Program Files.`nError: $($_.Exception.Message)",
+        "Could not overwrite files in $dst.`nClose FL Studio before updating.`nError: $($_.Exception.Message)",
         "Phantom Voicer Update Error",
         [System.Windows.Forms.MessageBoxButtons]::OK,
         [System.Windows.Forms.MessageBoxIcon]::Error
