@@ -150,7 +150,7 @@ pub struct PhantomParams {
     #[id = "humanize_vel"]
     pub humanize_vel: FloatParam,
 
-    // --- Built-in Rhodes Preview & FX ---
+    // --- Built-in Sound & FX ---
     #[id = "preview_enabled"]
     pub preview_enabled: BoolParam,
     #[id = "preview_gain"]
@@ -163,6 +163,42 @@ pub struct PhantomParams {
     pub tremolo_depth: FloatParam,
     #[id = "tremolo_rate"]
     pub tremolo_rate_hz: FloatParam,
+
+    // --- Scarbee Mark I "Pan Cake Kore" Dedicated Rack ---
+    #[id = "mk1_bass"]
+    pub mk1_bass: FloatParam,
+    #[id = "mk1_treble"]
+    pub mk1_treble: FloatParam,
+    #[id = "mk1_noise_lvl"]
+    pub mk1_noise_level: FloatParam,
+    #[id = "mk1_rel_noise"]
+    pub mk1_release_noise: FloatParam,
+
+    #[id = "mk1_fx_pan"]
+    pub mk1_fx_pan: BoolParam,
+    #[id = "mk1_fx_wah"]
+    pub mk1_fx_autowah: BoolParam,
+    #[id = "mk1_fx_comp"]
+    pub mk1_fx_comp: BoolParam,
+    #[id = "mk1_fx_chorus"]
+    pub mk1_fx_chorus: BoolParam,
+    #[id = "mk1_fx_dist"]
+    pub mk1_fx_dist: BoolParam,
+    #[id = "mk1_fx_phaser"]
+    pub mk1_fx_phaser: BoolParam,
+    #[id = "mk1_fx_amp"]
+    pub mk1_fx_amp: BoolParam,
+
+    #[id = "mk1_pan_int"]
+    pub mk1_pan_intensity: FloatParam,
+    #[id = "mk1_pan_spd"]
+    pub mk1_pan_speed: FloatParam,
+    #[id = "mk1_pan_sync"]
+    pub mk1_pan_sync: BoolParam,
+    #[id = "mk1_amp_drv"]
+    pub mk1_amp_drive: FloatParam,
+    #[id = "mk1_amp_out"]
+    pub mk1_amp_output: FloatParam,
 }
 
 impl Default for PhantomParams {
@@ -302,6 +338,50 @@ impl Default for PhantomParams {
             )
             .with_step_size(0.1)
             .with_unit(" Hz"),
+
+            // Exact Scarbee Mark I "Pan Cake Kore" defaults
+            mk1_bass: FloatParam::new("MK1 Bass", 0.05, FloatRange::Linear { min: -1.0, max: 1.0 })
+                .with_unit("%")
+                .with_value_to_string(formatters::v2s_f32_percentage(0))
+                .with_string_to_value(formatters::s2v_f32_percentage()),
+            mk1_treble: FloatParam::new("MK1 Treble", 0.12, FloatRange::Linear { min: -1.0, max: 1.0 })
+                .with_unit("%")
+                .with_value_to_string(formatters::v2s_f32_percentage(0))
+                .with_string_to_value(formatters::s2v_f32_percentage()),
+            mk1_noise_level: FloatParam::new("MK1 Noise", 0.45, FloatRange::Linear { min: 0.0, max: 1.0 })
+                .with_unit("%")
+                .with_value_to_string(formatters::v2s_f32_percentage(0))
+                .with_string_to_value(formatters::s2v_f32_percentage()),
+            mk1_release_noise: FloatParam::new("MK1 Release", 0.48, FloatRange::Linear { min: 0.0, max: 1.0 })
+                .with_unit("%")
+                .with_value_to_string(formatters::v2s_f32_percentage(0))
+                .with_string_to_value(formatters::s2v_f32_percentage()),
+
+            mk1_fx_pan: BoolParam::new("MK1 Pan", true),
+            mk1_fx_autowah: BoolParam::new("MK1 AutoWah", false),
+            mk1_fx_comp: BoolParam::new("MK1 Comp", false),
+            mk1_fx_chorus: BoolParam::new("MK1 Chorus", true),
+            mk1_fx_dist: BoolParam::new("MK1 Dist", false),
+            mk1_fx_phaser: BoolParam::new("MK1 Phaser", false),
+            mk1_fx_amp: BoolParam::new("MK1 Amp", true),
+
+            mk1_pan_intensity: FloatParam::new("MK1 Pan Int", 0.45, FloatRange::Linear { min: 0.0, max: 1.0 })
+                .with_unit("%")
+                .with_value_to_string(formatters::v2s_f32_percentage(0))
+                .with_string_to_value(formatters::s2v_f32_percentage()),
+            mk1_pan_speed: FloatParam::new("MK1 Pan Spd", 0.55, FloatRange::Linear { min: 0.0, max: 1.0 })
+                .with_unit("%")
+                .with_value_to_string(formatters::v2s_f32_percentage(0))
+                .with_string_to_value(formatters::s2v_f32_percentage()),
+            mk1_pan_sync: BoolParam::new("MK1 Pan Sync", true),
+            mk1_amp_drive: FloatParam::new("MK1 Drive", 0.35, FloatRange::Linear { min: 0.0, max: 1.0 })
+                .with_unit("%")
+                .with_value_to_string(formatters::v2s_f32_percentage(0))
+                .with_string_to_value(formatters::s2v_f32_percentage()),
+            mk1_amp_output: FloatParam::new("MK1 Output", 0.58, FloatRange::Linear { min: 0.0, max: 1.0 })
+                .with_unit("%")
+                .with_value_to_string(formatters::v2s_f32_percentage(0))
+                .with_string_to_value(formatters::s2v_f32_percentage()),
         }
     }
 }

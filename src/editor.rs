@@ -27,9 +27,17 @@ const FONT_IMPACT: &str = "p5_impact";
 const FONT_HEAVY: &str = "p5_heavy";
 const FONT_SERIF: &str = "p5_serif";
 
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum UiTab {
+    #[default]
+    MainRack,
+    Mark1Kore,
+}
+
 #[derive(Default)]
 struct EditorUiState {
     auditioning_note: Option<u8>,
+    active_tab: UiTab,
 }
 
 #[derive(Clone, Copy)]
@@ -326,7 +334,15 @@ pub fn create(
                                 setter,
                             );
                             ui.add_space(8.0);
-                            draw_starburst_zone(ui, right_w, top_h, &params, &ui_state, setter);
+                            draw_starburst_zone(
+                                ui,
+                                right_w,
+                                top_h,
+                                &params,
+                                &ui_state,
+                                setter,
+                                state,
+                            );
                         },
                     );
 
@@ -685,6 +701,7 @@ fn draw_starburst_zone(
     params: &PhantomParams,
     ui_state: &SharedUiState,
     setter: &ParamSetter,
+    state: &mut EditorUiState,
 ) {
     let (zone_rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
     let painter = ui.painter_at(zone_rect);
@@ -748,37 +765,73 @@ fn draw_starburst_zone(
             .layout(egui::Layout::top_down(egui::Align::Min)),
     );
 
-    let (mode_r, mode_resp) = hdr_left.allocate_exact_size(Vec2::new(220.0, 34.0), Sense::click());
-    if mode_resp.clicked() {
-        setter.begin_set_parameter(&params.chord_assist);
-        setter.set_parameter(&params.chord_assist, !chord_assist);
-        setter.end_set_parameter(&params.chord_assist);
-    }
-    draw_p5_3d_text(
-        hdr_left.painter(),
-        Pos2::new(mode_r.left() + 4.0, mode_r.center().y),
-        egui::Align2::LEFT_CENTER,
-        if chord_assist {
-            "Mode: Chord Assist"
-        } else {
-            "Mode: Single Note"
-        },
-        16.5,
-        if chord_assist { P5_GOLD } else { P5_WHITE },
-        if mode_resp.hovered() { P5_RED } else { P5_WHITE },
-        FONT_IMPACT,
-    );
+    hdr_left.horizontal(|ui| {
+        let (t1_r, t1_resp) = ui.allocate_exact_size(Vec2::new(112.0, 30.0), Sense::click());
+        if t1_resp.clicked() {
+            state.active_tab = UiTab::MainRack;
+        }
+        draw_p5_3d_text(
+            ui.painter(),
+            t1_r.center(),
+            egui::Align2::CENTER_CENTER,
+            "Main Rack",
+            14.0,
+            if state.active_tab == UiTab::MainRack { P5_CYAN } else { P5_WHITE },
+            if state.active_tab == UiTab::MainRack { P5_CYAN } else { P5_WHITE },
+            FONT_IMPACT,
+        );
 
-    hdr_left.add_space(3.0);
-    hdr_left.label(
-        RichText::new(if chord_assist {
-            "Keys trigger full P5 jazz voicings"
-        } else {
-            "Normal instrument mode — play melodies & chords freely"
-        })
-        .size(11.0)
-        .color(P5_MUTED),
-    );
+        let (t2_r, t2_resp) = ui.allocate_exact_size(Vec2::new(124.0, 30.0), Sense::click());
+        if t2_resp.clicked() {
+            state.active_tab = UiTab::Mark1Kore;
+            if params.sound_patch.value() != SoundPatch::VelvetRhodes {
+                setter.begin_set_parameter(&params.sound_patch);
+                setter.set_parameter(&params.sound_patch, SoundPatch::VelvetRhodes);
+                setter.end_set_parameter(&params.sound_patch);
+            }
+        }
+        draw_p5_3d_text(
+            ui.painter(),
+            t2_r.center(),
+            egui::Align2::CENTER_CENTER,
+            "Mark I Kore",
+            14.0,
+            if state.active_tab == UiTab::Mark1Kore { P5_GOLD } else { P5_WHITE },
+            if state.active_tab == UiTab::Mark1Kore { P5_GOLD } else { P5_WHITE },
+            FONT_IMPACT,
+        );
+    });
+
+    hdr_left.add_space(2.0);
+    hdr_left.horizontal(|ui| {
+        let mode_btn = egui::Button::new(
+            RichText::new(if chord_assist {
+                "MODE: CHORD ASSIST"
+            } else {
+                "MODE: SINGLE NOTE"
+            })
+            .size(10.5)
+            .strong()
+            .color(if chord_assist { P5_BLACK } else { P5_WHITE }),
+        )
+        .fill(if chord_assist { P5_GOLD } else { P5_BLACK })
+        .stroke(Stroke::new(1.5_f32, P5_WHITE));
+
+        if ui.add(mode_btn).clicked() {
+            setter.begin_set_parameter(&params.chord_assist);
+            setter.set_parameter(&params.chord_assist, !chord_assist);
+            setter.end_set_parameter(&params.chord_assist);
+        }
+        ui.label(
+            RichText::new(if chord_assist {
+                "Keys trigger P5 chords"
+            } else {
+                "Play melodies & chords freely"
+            })
+            .size(10.5)
+            .color(P5_MUTED),
+        );
+    });
 
     // Trapezoid Active Note / Chord Callout on right
     let trap_rect = Rect::from_min_max(
@@ -826,6 +879,11 @@ fn draw_starburst_zone(
     );
 
     child_ui.add_space(8.0);
+
+    if state.active_tab == UiTab::Mark1Kore {
+        draw_mark1_kore_rack(&mut child_ui, params, setter);
+        return;
+    }
 
     child_ui.columns(2, |cols| {
         draw_cutout_card(&mut cols[0], "01 // Tone & Env", P5_GOLD, |ui| {
@@ -974,6 +1032,376 @@ fn draw_starburst_zone(
                 );
             });
         });
+}
+
+fn draw_mark1_kore_rack(ui: &mut egui::Ui, params: &PhantomParams, setter: &ParamSetter) {
+    let orange_led = Color32::from_rgb(255, 132, 24);
+    let charcoal = Color32::from_rgb(42, 44, 49);
+    let brushed = Color32::from_rgb(186, 190, 198);
+    let brushed_dark = Color32::from_rgb(56, 58, 64);
+
+    // TOP PANEL: Charcoal Instrument Section (Bass, Treble, Mark I Logo, Instrument Noise)
+    egui::Frame::new()
+        .fill(charcoal)
+        .stroke(Stroke::new(2.0_f32, P5_BLACK))
+        .inner_margin(10.0)
+        .show(ui, |ui| {
+            ui.set_min_height(112.0);
+            ui.horizontal(|ui| {
+                let col_w = (ui.available_width() - 16.0) / 5.0;
+                mk1_silver_knob(ui, "BASS", "LEVEL", &params.mk1_bass, setter, col_w, true);
+                mk1_silver_knob(ui, "TREBLE", "LEVEL", &params.mk1_treble, setter, col_w, true);
+
+                ui.allocate_ui_with_layout(
+                    Vec2::new(col_w, 92.0),
+                    egui::Layout::top_down(egui::Align::Center),
+                    |ui| {
+                        ui.add_space(18.0);
+                        ui.label(
+                            RichText::new("SCARBEE")
+                                .size(10.0)
+                                .strong()
+                                .color(Color32::from_rgb(138, 142, 152)),
+                        );
+                        ui.label(
+                            RichText::new("MARK I")
+                                .size(18.0)
+                                .strong()
+                                .color(Color32::from_rgb(188, 192, 202)),
+                        );
+                        ui.label(
+                            RichText::new("KORE RACK")
+                                .size(9.5)
+                                .color(P5_GOLD),
+                        );
+                    },
+                );
+
+                mk1_silver_knob(
+                    ui,
+                    "NOISE",
+                    "LEVEL",
+                    &params.mk1_noise_level,
+                    setter,
+                    col_w,
+                    true,
+                );
+                mk1_silver_knob(
+                    ui,
+                    "NOISE",
+                    "RELEASE",
+                    &params.mk1_release_noise,
+                    setter,
+                    col_w,
+                    true,
+                );
+            });
+        });
+
+    ui.add_space(6.0);
+
+    // BOTTOM PANEL: Brushed Aluminum FX Rack ("Pan Cake Kore")
+    egui::Frame::new()
+        .fill(brushed)
+        .stroke(Stroke::new(2.0_f32, P5_BLACK))
+        .inner_margin(10.0)
+        .show(ui, |ui| {
+            ui.set_min_height(176.0);
+            ui.horizontal(|ui| {
+                // Left LED Switch Stack
+                ui.allocate_ui_with_layout(
+                    Vec2::new(86.0, 156.0),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.add_space(8.0);
+                        mk1_led_switch(ui, "PAN", &params.mk1_fx_pan, setter, orange_led);
+                        ui.add_space(8.0);
+                        mk1_led_switch(ui, "AUTOWAH", &params.mk1_fx_autowah, setter, orange_led);
+                        ui.add_space(8.0);
+                        mk1_led_switch(ui, "COMP.", &params.mk1_fx_comp, setter, orange_led);
+                        ui.add_space(8.0);
+                        mk1_led_switch(ui, "CHORUS", &params.mk1_fx_chorus, setter, orange_led);
+                    },
+                );
+
+                // Left-Center Pan Controls (Intensity, Speed, Sync)
+                ui.allocate_ui_with_layout(
+                    Vec2::new(118.0, 156.0),
+                    egui::Layout::top_down(egui::Align::Center),
+                    |ui| {
+                        ui.horizontal(|ui| {
+                            ui.add_space(56.0);
+                            let sync = params.mk1_pan_sync.value();
+                            let sync_btn = egui::Button::new(
+                                RichText::new(if sync { "♪ SYNC" } else { "Hz" })
+                                    .size(9.5)
+                                    .strong()
+                                    .color(if sync { P5_WHITE } else { brushed_dark }),
+                            )
+                            .fill(if sync { brushed_dark } else { Color32::from_rgb(160, 164, 172) })
+                            .stroke(Stroke::new(1.0_f32, P5_BLACK));
+                            if ui.add(sync_btn).clicked() {
+                                setter.begin_set_parameter(&params.mk1_pan_sync);
+                                setter.set_parameter(&params.mk1_pan_sync, !sync);
+                                setter.end_set_parameter(&params.mk1_pan_sync);
+                            }
+                        });
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            mk1_silver_knob(
+                                ui,
+                                "PAN",
+                                "Intensity",
+                                &params.mk1_pan_intensity,
+                                setter,
+                                56.0,
+                                false,
+                            );
+                            mk1_silver_knob(
+                                ui,
+                                "PAN",
+                                "Speed",
+                                &params.mk1_pan_speed,
+                                setter,
+                                56.0,
+                                false,
+                            );
+                        });
+                    },
+                );
+
+                // Center Preset & FX Type Strip
+                ui.allocate_ui_with_layout(
+                    Vec2::new(108.0, 156.0),
+                    egui::Layout::top_down(egui::Align::Center),
+                    |ui| {
+                        ui.add_space(10.0);
+                        egui::Frame::new()
+                            .fill(Color32::from_rgb(156, 160, 168))
+                            .stroke(Stroke::new(1.5_f32, Color32::from_rgb(95, 98, 106)))
+                            .inner_margin(5.0)
+                            .show(ui, |ui| {
+                                ui.label(
+                                    RichText::new("FX TYPE")
+                                        .size(9.5)
+                                        .strong()
+                                        .color(brushed_dark),
+                                );
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new("○ SND").size(8.5).color(brushed_dark));
+                                    ui.label(
+                                        RichText::new("● INS")
+                                            .size(8.5)
+                                            .strong()
+                                            .color(orange_led),
+                                    );
+                                });
+                            });
+                        ui.add_space(10.0);
+                        ui.label(
+                            RichText::new("EFFECT PRESET")
+                                .size(9.0)
+                                .strong()
+                                .color(brushed_dark),
+                        );
+                        let preset_btn = egui::Button::new(
+                            RichText::new("Pan Cake Kore")
+                                .size(10.5)
+                                .strong()
+                                .color(P5_BLACK),
+                        )
+                        .fill(Color32::from_rgb(94, 198, 78))
+                        .stroke(Stroke::new(1.5_f32, P5_BLACK));
+                        if ui
+                            .add(preset_btn)
+                            .on_hover_text("Click to restore exact Pan Cake Kore settings")
+                            .clicked()
+                        {
+                            reset_pancake_kore_preset(params, setter);
+                        }
+                    },
+                );
+
+                // Right-Center Amp Drive & Output
+                ui.allocate_ui_with_layout(
+                    Vec2::new(118.0, 156.0),
+                    egui::Layout::top_down(egui::Align::Center),
+                    |ui| {
+                        ui.add_space(28.0);
+                        ui.horizontal(|ui| {
+                            mk1_silver_knob(
+                                ui,
+                                "AMP",
+                                "Drive",
+                                &params.mk1_amp_drive,
+                                setter,
+                                56.0,
+                                false,
+                            );
+                            mk1_silver_knob(
+                                ui,
+                                "AMP",
+                                "Output",
+                                &params.mk1_amp_output,
+                                setter,
+                                56.0,
+                                false,
+                            );
+                        });
+                    },
+                );
+
+                // Right LED Switch Stack
+                ui.allocate_ui_with_layout(
+                    Vec2::new(ui.available_width(), 156.0),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.add_space(16.0);
+                        mk1_led_switch(ui, "DIST.", &params.mk1_fx_dist, setter, orange_led);
+                        ui.add_space(12.0);
+                        mk1_led_switch(ui, "PHASER", &params.mk1_fx_phaser, setter, orange_led);
+                        ui.add_space(12.0);
+                        mk1_led_switch(ui, "AMP", &params.mk1_fx_amp, setter, orange_led);
+                    },
+                );
+            });
+        });
+}
+
+fn reset_pancake_kore_preset(params: &PhantomParams, setter: &ParamSetter) {
+    let set_f = |p: &FloatParam, v: f32| {
+        setter.begin_set_parameter(p);
+        setter.set_parameter(p, v);
+        setter.end_set_parameter(p);
+    };
+    let set_b = |p: &BoolParam, v: bool| {
+        setter.begin_set_parameter(p);
+        setter.set_parameter(p, v);
+        setter.end_set_parameter(p);
+    };
+    set_f(&params.mk1_bass, 0.05);
+    set_f(&params.mk1_treble, 0.12);
+    set_f(&params.mk1_noise_level, 0.45);
+    set_f(&params.mk1_release_noise, 0.48);
+    set_b(&params.mk1_fx_pan, true);
+    set_b(&params.mk1_fx_autowah, false);
+    set_b(&params.mk1_fx_comp, false);
+    set_b(&params.mk1_fx_chorus, true);
+    set_b(&params.mk1_fx_dist, false);
+    set_b(&params.mk1_fx_phaser, false);
+    set_b(&params.mk1_fx_amp, true);
+    set_f(&params.mk1_pan_intensity, 0.45);
+    set_f(&params.mk1_pan_speed, 0.55);
+    set_b(&params.mk1_pan_sync, true);
+    set_f(&params.mk1_amp_drive, 0.35);
+    set_f(&params.mk1_amp_output, 0.58);
+}
+
+fn mk1_led_switch(
+    ui: &mut egui::Ui,
+    label: &str,
+    param: &BoolParam,
+    setter: &ParamSetter,
+    led_on_col: Color32,
+) {
+    let active = param.value();
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(82.0, 22.0), Sense::click());
+    if resp.clicked() {
+        setter.begin_set_parameter(param);
+        setter.set_parameter(param, !active);
+        setter.end_set_parameter(param);
+    }
+    let p = ui.painter();
+    let bg = if resp.hovered() {
+        Color32::from_rgb(156, 160, 168)
+    } else {
+        Color32::from_rgb(168, 172, 180)
+    };
+    p.rect(
+        rect,
+        CornerRadius::same(2),
+        bg,
+        Stroke::new(1.0_f32, Color32::from_rgb(110, 114, 122)),
+        StrokeKind::Inside,
+    );
+    let led_center = Pos2::new(rect.left() + 11.0, rect.center().y);
+    p.circle_filled(led_center, 4.5, P5_BLACK);
+    p.circle_filled(
+        led_center,
+        3.5,
+        if active {
+            led_on_col
+        } else {
+            Color32::from_rgb(55, 55, 60)
+        },
+    );
+    p.text(
+        Pos2::new(rect.left() + 21.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        FontId::proportional(11.0),
+        Color32::from_rgb(28, 30, 35),
+    );
+}
+
+fn mk1_silver_knob<P: Param>(
+    ui: &mut egui::Ui,
+    top_label: &str,
+    bot_label: &str,
+    param: &P,
+    setter: &ParamSetter,
+    width: f32,
+    dark_bg: bool,
+) {
+    ui.allocate_ui_with_layout(
+        Vec2::new(width, 92.0),
+        egui::Layout::top_down(egui::Align::Center),
+        |ui| {
+            let lbl_col = if dark_bg {
+                Color32::from_rgb(185, 188, 198)
+            } else {
+                Color32::from_rgb(35, 38, 44)
+            };
+            ui.label(RichText::new(top_label).size(9.5).strong().color(lbl_col));
+
+            let knob_size = 44.0;
+            let (rect, resp) =
+                ui.allocate_exact_size(Vec2::splat(knob_size), Sense::click_and_drag());
+            if resp.drag_started() {
+                setter.begin_set_parameter(param);
+            }
+            if resp.dragged() {
+                let delta = -resp.drag_delta().y * 0.005;
+                let cur = param.unmodulated_normalized_value();
+                let next = (cur + delta).clamp(0.0, 1.0);
+                setter.set_parameter(param, param.preview_plain(next));
+            }
+            if resp.drag_stopped() {
+                setter.end_set_parameter(param);
+            }
+            if resp.double_clicked() {
+                setter.begin_set_parameter(param);
+                setter.set_parameter(param, param.default_plain_value());
+                setter.end_set_parameter(param);
+            }
+
+            let norm = param.modulated_normalized_value().clamp(0.0, 1.0);
+            let p = ui.painter();
+            let c = rect.center();
+            let r = knob_size * 0.44;
+            p.circle_filled(c + Vec2::new(1.5, 2.0), r, Color32::from_rgba_unmultiplied(0, 0, 0, 110));
+            p.circle_filled(c, r, Color32::from_rgb(208, 212, 220));
+            p.circle_stroke(c, r, Stroke::new(2.0_f32, Color32::from_rgb(32, 34, 40)));
+            p.circle_filled(c, r * 0.68, Color32::from_rgb(232, 235, 240));
+
+            let ang = 0.75 * PI + norm * 1.5 * PI;
+            let ptr = Pos2::new(c.x + ang.cos() * (r - 2.0), c.y + ang.sin() * (r - 2.0));
+            p.line_segment([c, ptr], Stroke::new(2.4_f32, P5_BLACK));
+
+            ui.label(RichText::new(bot_label).size(9.5).strong().color(lbl_col));
+            ui.label(RichText::new(param.to_string()).size(9.5).color(lbl_col));
+        },
+    );
 }
 
 fn draw_cutout_card(

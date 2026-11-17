@@ -11,7 +11,7 @@ mod updater;
 use harmony::SharedUiState;
 use params::PhantomParams;
 use scheduler::ChordScheduler;
-use synth::PhantomSynth;
+use synth::{Mark1Settings, PhantomSynth};
 use updater::UpdaterHandle;
 
 pub struct PhantomVoicer {
@@ -130,6 +130,27 @@ impl Plugin for PhantomVoicer {
         let wah_amt = self.params.wah_amount.value();
         let trem_depth = self.params.tremolo_depth.value();
         let trem_rate = self.params.tremolo_rate_hz.value();
+        let tempo_bpm = context.transport().tempo.unwrap_or(120.0).clamp(40.0, 260.0) as f32;
+
+        let mk1 = Mark1Settings {
+            bass: self.params.mk1_bass.value(),
+            treble: self.params.mk1_treble.value(),
+            noise_level: self.params.mk1_noise_level.value(),
+            release_noise: self.params.mk1_release_noise.value(),
+            fx_pan: self.params.mk1_fx_pan.value(),
+            fx_autowah: self.params.mk1_fx_autowah.value(),
+            fx_comp: self.params.mk1_fx_comp.value(),
+            fx_chorus: self.params.mk1_fx_chorus.value(),
+            fx_dist: self.params.mk1_fx_dist.value(),
+            fx_phaser: self.params.mk1_fx_phaser.value(),
+            fx_amp: self.params.mk1_fx_amp.value(),
+            pan_intensity: self.params.mk1_pan_intensity.value(),
+            pan_speed: self.params.mk1_pan_speed.value(),
+            pan_sync: self.params.mk1_pan_sync.value(),
+            amp_drive: self.params.mk1_amp_drive.value(),
+            amp_output: self.params.mk1_amp_output.value(),
+            tempo_bpm,
+        };
 
         let mut next_ev = context.next_event();
 
@@ -166,6 +187,7 @@ impl Plugin for PhantomVoicer {
                     trem_depth,
                     trem_rate,
                     gain,
+                    &mk1,
                 )
             } else {
                 let _ = self.synth.process_sample(
@@ -179,6 +201,7 @@ impl Plugin for PhantomVoicer {
                     trem_depth,
                     trem_rate,
                     0.0,
+                    &mk1,
                 );
                 (0.0, 0.0)
             };
