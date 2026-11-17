@@ -449,7 +449,7 @@ fn download_and_launch_updater(version: &str, zip_url: &str) -> Result<String, S
     }
 
     spawn_updater_gui(version, &extract_dir, &active_target, &install_dir, false)?;
-    Ok(format!("Finish in popup -> close DAW for v{version}"))
+    Ok(format!("Reload plugin -> v{version}"))
 }
 
 fn launch_cleanse_only() -> Result<String, String> {
@@ -508,10 +508,10 @@ fn spawn_updater_gui(
     // TopMost visible WinForms updater that:
     // 1) Discovers ALL phantom_voicer.* copies (standard VST3, CLAP, VST2, Image-Line, Downloads, Desktop).
     // 2) Auto-elevates via UAC if any location requires Admin.
-    // 3) Auto-polls every 450ms while FL Studio / Phantom Voicer locks any DLL—NO Retry button needed.
-    // 4) Installs fresh files to the single canonical path (plus updates Downloads\PhantomVoicer if present),
-    //    and CLEANSES (deletes) all duplicate/older/nested/bak copies across the PC!
-    // 5) Verifies SHA-256 hash before declaring success.
+    // 3) NEVER forces the user to close FL Studio first: if a DLL/EXE is locked in RAM, NTFS Move-Item
+    //    moves the locked file/bundle out of the VST3/CLAP folder into a temp trash folder immediately,
+    //    then installs the fresh verified vX.Y.Z bundle into the canonical path!
+    // 4) Verifies SHA-256 hash before declaring success.
     let ps_script = format!(
         r#"param([switch]$Elevated)
 $ErrorActionPreference = 'Stop'
@@ -532,11 +532,9 @@ try {{
     $srcClapHash = if (Test-Path $srcClap) {{ (Get-FileHash $srcClap).Hash }} else {{ $null }}
     $srcExeHash  = if (Test-Path $srcExe)  {{ (Get-FileHash $srcExe).Hash }}  else {{ $null }}
 
-    # Canonical VST3 destination: keep the active VST3 path (clean up any empty PhantomVoicer subfolder if needed)
     $canonicalVst3 = if ($activeTarget -match '\.vst3$') {{ $activeTarget }} else {{ Join-Path "$env:LOCALAPPDATA\Programs\Common\VST3" 'phantom_voicer.vst3' }}
     $downloadsFolder = Join-Path "$env:USERPROFILE\Downloads" 'PhantomVoicer'
 
-    # Scan everywhere for old/duplicate copies to cleanse
     $allVst3 = New-Object System.Collections.Generic.HashSet[string]([StringComparer]::OrdinalIgnoreCase)
     $allClap = New-Object System.Collections.Generic.HashSet[string]([StringComparer]::OrdinalIgnoreCase)
     $allExe  = New-Object System.Collections.Generic.HashSet[string]([StringComparer]::OrdinalIgnoreCase)
@@ -587,20 +585,6 @@ try {{
         }}
     }}
 
-    function Test-FileLocked([string]$filePath) {{
-        if (-not (Test-Path $filePath -PathType Leaf)) {{ return $false }}
-        try {{
-            $fs = [System.IO.File]::Open($filePath, 'Open', 'ReadWrite', 'None')
-            $fs.Close()
-            return $false
-        }} catch [System.UnauthorizedAccessException] {{
-            return $false
-        }} catch [System.IO.IOException] {{
-            return $true
-        }}
-    }}
-
-    # Check if any discovered target or canonical parent requires Admin elevation
     $needsElevation = -not (Test-DirWritable (Split-Path $canonicalVst3 -Parent))
     foreach ($t in $allVst3) {{ if (-not (Test-DirWritable (Split-Path $t -Parent))) {{ $needsElevation = $true }} }}
     foreach ($t in $allClap) {{ if (-not (Test-DirWritable (Split-Path $t -Parent))) {{ $needsElevation = $true }} }}
@@ -629,159 +613,131 @@ try {{
         }}
     }}
 
-    # Show sleek TopMost status window that auto-waits for FL Studio to exit (zero Retry clicks!)
-    $form = New-Object System.Windows.Forms.Form
-    $form.Text = "Phantom Voicer Updater"
-    $form.Size = New-Object System.Drawing.Size(470, 195)
-    $form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
-    $form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
-    $form.MaximizeBox = $false
-    $form.MinimizeBox = $false
-    $form.TopMost = $true
-    $form.BackColor = [System.Drawing.Color]::FromArgb(18, 18, 22)
-    $form.ForeColor = [System.Drawing.Color]::White
+    # Best-effort cleanup of old trash folders from prior hot-swaps
+    Get-ChildItem -Path $env:TEMP -Filter 'PhantomVoicerTrash-*' -Directory -ErrorAction SilentlyContinue | ForEach-Object {{
+        Remove-Item -Recurse -Force $_.FullName -ErrorAction SilentlyContinue
+    }}
 
-    $titleLbl = New-Object System.Windows.Forms.Label
-    $titleLbl.Text = if ($cleanseOnly) {{ "CLEANSE OLD VERSIONS (v$ver)" }} else {{ "UPDATING PHANTOM VOICER TO v$ver" }}
-    $titleLbl.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
-    $titleLbl.ForeColor = [System.Drawing.Color]::FromArgb(247, 184, 1)
-    $titleLbl.Location = New-Object System.Drawing.Point(18, 14)
-    $titleLbl.Size = New-Object System.Drawing.Size(420, 24)
-    $form.Controls.Add($titleLbl)
+    $trashRoot = Join-Path $env:TEMP ('PhantomVoicerTrash-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    New-Item -ItemType Directory -Force -Path $trashRoot | Out-Null
 
-    $statusLbl = New-Object System.Windows.Forms.Label
-    $statusLbl.Text = "Checking running apps and preparing cleanse..."
-    $statusLbl.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
-    $statusLbl.Location = New-Object System.Drawing.Point(18, 46)
-    $statusLbl.Size = New-Object System.Drawing.Size(425, 62)
-    $form.Controls.Add($statusLbl)
-
-    $actionBtn = New-Object System.Windows.Forms.Button
-    $actionBtn.Text = "Cancel"
-    $actionBtn.Location = New-Object System.Drawing.Point(345, 118)
-    $actionBtn.Size = New-Object System.Drawing.Size(95, 28)
-    $actionBtn.BackColor = [System.Drawing.Color]::FromArgb(40, 40, 48)
-    $actionBtn.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
-    $script:doneState = $false
-    $actionBtn.Add_Click({{ $form.Close() }})
-    $form.Controls.Add($actionBtn)
-
-    $timer = New-Object System.Windows.Forms.Timer
-    $timer.Interval = 450
-
-    $timer.Add_Tick({{
+    function Remove-OrMoveLocked([string]$targetPath) {{
+        if (-not (Test-Path $targetPath)) {{ return $false }}
         try {{
-            $lockedFile = $null
-            foreach ($t in $allVst3) {{
-                $dll = Join-Path $t 'Contents\x86_64-win\phantom_voicer.vst3'
-                if (Test-FileLocked $dll) {{ $lockedFile = $dll; break }}
-            }}
-            if (-not $lockedFile) {{
-                foreach ($t in $allClap) {{ if (Test-FileLocked $t) {{ $lockedFile = $t; break }} }}
-            }}
-            if (-not $lockedFile) {{
-                foreach ($t in $allExe) {{ if (Test-FileLocked $t) {{ $lockedFile = $t; break }} }}
-            }}
-
-            if ($lockedFile) {{
-                $statusLbl.Text = "Please close FL Studio / Phantom Voicer now.`r`nUpdate & cleanse will run automatically once unlocked!`r`nLocked: $lockedFile"
-                return
-            }}
-
-            $timer.Stop()
-            $statusLbl.Text = "Installing v$ver and cleansing old/duplicate copies..."
-            $form.Refresh()
-
-            $cleansed = 0
-            $updated = 0
-
-            # 1) Cleanse ALL stale .bak and ALL old/duplicate VST3/CLAP/EXE copies first
-            foreach ($b in $allBak) {{
-                if (Test-Path $b) {{ Remove-Item -Recurse -Force $b; $cleansed++ }}
-            }}
-            foreach ($oldV in $allVst3) {{
-                if (Test-Path $oldV) {{
-                    if (-not $srcVst3Hash -and $oldV.Equals($canonicalVst3, [StringComparison]::OrdinalIgnoreCase)) {{
-                        # Preserve canonical VST3 when running cleanse from standalone exe without a staged VST3
-                        $nested = Join-Path $oldV 'phantom_voicer.vst3'
-                        if (Test-Path $nested) {{ Remove-Item -Recurse -Force $nested; $cleansed++ }}
-                        continue
-                    }}
-                    Remove-Item -Recurse -Force $oldV
-                    if (-not $oldV.Equals($canonicalVst3, [StringComparison]::OrdinalIgnoreCase)) {{
-                        $cleansed++
-                    }}
-                }}
-            }}
-            foreach ($oldC in $allClap) {{
-                if (Test-Path $oldC) {{
-                    Remove-Item -Force $oldC
-                    $cleansed++
-                }}
-            }}
-            foreach ($oldE in $allExe) {{
-                if (Test-Path $oldE) {{
-                    # Preserve Downloads\PhantomVoicer\phantom_voicer.exe if updating it below; cleanse others
-                    $dlExe = Join-Path $downloadsFolder 'phantom_voicer.exe'
-                    if (-not $oldE.Equals($dlExe, [StringComparison]::OrdinalIgnoreCase)) {{
-                        Remove-Item -Force $oldE
-                        $cleansed++
-                    }}
-                }}
-            }}
-
-            # 2) Install the single clean canonical VST3 (and verify hash)
-            if ($srcVst3Hash) {{
-                $canonParent = Split-Path $canonicalVst3 -Parent
-                New-Item -ItemType Directory -Force -Path $canonParent | Out-Null
-                Copy-Item -Recurse -Force $srcVst3 $canonParent
-                $placed = Join-Path $canonParent (Split-Path $srcVst3 -Leaf)
-                if ($placed -ne $canonicalVst3) {{
-                    if (Test-Path $canonicalVst3) {{ Remove-Item -Recurse -Force $canonicalVst3 }}
-                    Rename-Item -Path $placed -NewName (Split-Path $canonicalVst3 -Leaf)
-                }}
-                $dstDll = Join-Path $canonicalVst3 'Contents\x86_64-win\phantom_voicer.vst3'
-                $nested = Join-Path $canonicalVst3 'phantom_voicer.vst3'
-                if (Test-Path $nested) {{ Remove-Item -Recurse -Force $nested; $cleansed++ }}
-                if (-not (Test-Path $dstDll) -or ((Get-FileHash $dstDll).Hash -ne $srcVst3Hash)) {{
-                    throw "SHA-256 verification failed for $dstDll"
-                }}
-                $updated++
-            }}
-
-            # 3) If user kept a standalone exe or Downloads\PhantomVoicer folder, keep that single folder updated too
-            if ($activeTarget -match '\.exe$' -and $srcExeHash) {{
-                Copy-Item -Force $srcExe $activeTarget
-                if ((Get-FileHash $activeTarget).Hash -ne $srcExeHash) {{ throw "SHA-256 failed for $activeTarget" }}
-                $updated++
-            }} elseif ((Test-Path $downloadsFolder) -and $srcExeHash -and -not $cleanseOnly) {{
-                Copy-Item -Force $srcExe (Join-Path $downloadsFolder 'phantom_voicer.exe')
-                if ($srcVst3Hash) {{
-                    $dlVst3 = Join-Path $downloadsFolder 'phantom_voicer.vst3'
-                    if (Test-Path $dlVst3) {{ Remove-Item -Recurse -Force $dlVst3 }}
-                    Copy-Item -Recurse -Force $srcVst3 $downloadsFolder
-                }}
-                if ($srcClapHash) {{
-                    Copy-Item -Force $srcClap (Join-Path $downloadsFolder 'phantom_voicer.clap')
-                }}
-            }}
-
-            $script:doneState = $true
-            $titleLbl.ForeColor = [System.Drawing.Color]::FromArgb(28, 232, 255)
-            $titleLbl.Text = if ($cleanseOnly) {{ "CLEANSE COMPLETE!" }} else {{ "UPDATED TO v$ver!" }}
-            $statusLbl.Text = "Clean VST3: $canonicalVst3`r`nRemoved $cleansed duplicate/old file(s). Re-open FL Studio now!"
-            $actionBtn.Text = "OK"
+            Remove-Item -Recurse -Force $targetPath -ErrorAction Stop
+            return $true
         }} catch {{
-            $timer.Stop()
-            $titleLbl.ForeColor = [System.Drawing.Color]::FromArgb(230, 0, 26)
-            $titleLbl.Text = "UPDATE ERROR"
-            $statusLbl.Text = "$($_.Exception.Message)"
-            $actionBtn.Text = "Close"
+            # Windows locks delete on loaded DLLs, but allows moving them out of the VST3/CLAP folder on the same volume!
+            $srcRoot = [System.IO.Path]::GetPathRoot($targetPath)
+            $tmpRoot = [System.IO.Path]::GetPathRoot($trashRoot)
+            $destDir = if ($srcRoot -ieq $tmpRoot) {{
+                $trashRoot
+            }} else {{
+                $alt = Join-Path $srcRoot 'PhantomVoicerTrash'
+                New-Item -ItemType Directory -Force -Path $alt | Out-Null
+                $alt
+            }}
+            $destName = (Split-Path $targetPath -Leaf) + '.' + [guid]::NewGuid().ToString('N').Substring(0, 6)
+            Move-Item -Path $targetPath -Destination (Join-Path $destDir $destName) -Force -ErrorAction Stop
+            return $true
         }}
-    }})
+    }}
 
-    $form.Add_Shown({{ $timer.Start() }})
-    [void]$form.ShowDialog()
+    $cleansed = 0
+    $hotSwapped = $false
+
+    foreach ($b in $allBak) {{
+        if (Remove-OrMoveLocked $b) {{ $cleansed++ }}
+    }}
+
+    foreach ($oldV in $allVst3) {{
+        if (-not (Test-Path $oldV)) {{ continue }}
+        if (-not $srcVst3Hash -and $oldV.Equals($canonicalVst3, [StringComparison]::OrdinalIgnoreCase)) {{
+            $nested = Join-Path $oldV 'phantom_voicer.vst3'
+            if (Test-Path $nested) {{
+                if (Remove-OrMoveLocked $nested) {{ $cleansed++ }}
+            }}
+            continue
+        }}
+        $wasLocked = $false
+        $dll = Join-Path $oldV 'Contents\x86_64-win\phantom_voicer.vst3'
+        if (Test-Path $dll) {{
+            try {{
+                $fs = [System.IO.File]::Open($dll, 'Open', 'ReadWrite', 'None')
+                $fs.Close()
+            }} catch {{
+                $wasLocked = $true
+                $hotSwapped = $true
+            }}
+        }}
+        if (Remove-OrMoveLocked $oldV) {{
+            if (-not $oldV.Equals($canonicalVst3, [StringComparison]::OrdinalIgnoreCase)) {{
+                $cleansed++
+            }}
+        }}
+    }}
+
+    foreach ($oldC in $allClap) {{
+        if (Remove-OrMoveLocked $oldC) {{ $cleansed++ }}
+    }}
+
+    foreach ($oldE in $allExe) {{
+        $dlExe = Join-Path $downloadsFolder 'phantom_voicer.exe'
+        if (-not $oldE.Equals($dlExe, [StringComparison]::OrdinalIgnoreCase)) {{
+            if (Remove-OrMoveLocked $oldE) {{ $cleansed++ }}
+        }}
+    }}
+
+    if ($srcVst3Hash) {{
+        $canonParent = Split-Path $canonicalVst3 -Parent
+        New-Item -ItemType Directory -Force -Path $canonParent | Out-Null
+        Copy-Item -Recurse -Force $srcVst3 $canonParent
+        $placed = Join-Path $canonParent (Split-Path $srcVst3 -Leaf)
+        if ($placed -ne $canonicalVst3) {{
+            if (Test-Path $canonicalVst3) {{ [void](Remove-OrMoveLocked $canonicalVst3) }}
+            Rename-Item -Path $placed -NewName (Split-Path $canonicalVst3 -Leaf)
+        }}
+        $dstDll = Join-Path $canonicalVst3 'Contents\x86_64-win\phantom_voicer.vst3'
+        $nested = Join-Path $canonicalVst3 'phantom_voicer.vst3'
+        if (Test-Path $nested) {{ [void](Remove-OrMoveLocked $nested); $cleansed++ }}
+        if (-not (Test-Path $dstDll) -or ((Get-FileHash $dstDll).Hash -ne $srcVst3Hash)) {{
+            throw "SHA-256 verification failed for $dstDll"
+        }}
+    }}
+
+    if ($activeTarget -match '\.exe$' -and $srcExeHash) {{
+        [void](Remove-OrMoveLocked $activeTarget)
+        Copy-Item -Force $srcExe $activeTarget
+        if ((Get-FileHash $activeTarget).Hash -ne $srcExeHash) {{ throw "SHA-256 failed for $activeTarget" }}
+    }} elseif ((Test-Path $downloadsFolder) -and $srcExeHash -and -not $cleanseOnly) {{
+        $dlExe = Join-Path $downloadsFolder 'phantom_voicer.exe'
+        [void](Remove-OrMoveLocked $dlExe)
+        Copy-Item -Force $srcExe $dlExe
+        if ($srcVst3Hash) {{
+            $dlVst3 = Join-Path $downloadsFolder 'phantom_voicer.vst3'
+            if (Test-Path $dlVst3) {{ [void](Remove-OrMoveLocked $dlVst3) }}
+            Copy-Item -Recurse -Force $srcVst3 $downloadsFolder
+        }}
+        if ($srcClapHash) {{
+            Copy-Item -Force $srcClap (Join-Path $downloadsFolder 'phantom_voicer.clap')
+        }}
+    }}
+
+    $headline = if ($cleanseOnly) {{ "Phantom Voicer Cleanse Complete!" }} else {{ "Phantom Voicer Updated to v$ver!" }}
+    $reloadHint = if ($hotSwapped) {{
+        "Delete & re-add Phantom Voicer in FL Studio (if FL still caches the old DLL in RAM, restart FL once)."
+    }} else {{
+        "Delete & re-add Phantom Voicer in FL Studio to load v$ver!"
+    }}
+
+    [System.Windows.Forms.MessageBox]::Show(
+        "$headline`r`n`r`nInstalled: $canonicalVst3`r`nCleansed old/duplicate copies: $cleansed`r`n`r`n$reloadHint",
+        "Phantom Voicer Updater",
+        [System.Windows.Forms.MessageBoxButtons]::OK,
+        [System.Windows.Forms.MessageBoxIcon]::Information,
+        [System.Windows.Forms.MessageBoxDefaultButton]::Button1,
+        [System.Windows.Forms.MessageBoxOptions]::DefaultDesktopOnly
+    ) | Out-Null
 }} catch {{
     [System.Windows.Forms.MessageBox]::Show(
         "Phantom Voicer updater failed:`n$($_.Exception.Message)",
