@@ -29,10 +29,11 @@ jobs:
           $ver = $tag.TrimStart('v', 'V')
           New-Item -ItemType Directory -Force -Path release-staging | Out-Null
           Compress-Archive -Path "target/bundled/phantom_voicer.vst3", "target/bundled/phantom_voicer.clap", "target/bundled/phantom_voicer.exe" -DestinationPath "release-staging/PhantomVoicer-win64.zip" -Force
-          @{
+          $json = @{
             version = $ver
             zip_url = "https://github.com/znagersu/phantom-voicer/releases/latest/download/PhantomVoicer-win64.zip"
-          } | ConvertTo-Json | Set-Content -Path "release-staging/latest.json" -Encoding UTF8
+          } | ConvertTo-Json
+          [System.IO.File]::WriteAllText("release-staging/latest.json", $json, [System.Text.UTF8Encoding]::new($false))
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2

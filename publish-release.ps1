@@ -42,7 +42,7 @@ $manifest = @{
     version = $cleanVersion
     zip_url = "https://github.com/znagersu/phantom-voicer/releases/latest/download/PhantomVoicer-win64.zip"
 } | ConvertTo-Json
-Set-Content -Path $manifestPath -Value $manifest -Encoding UTF8
+[System.IO.File]::WriteAllText($manifestPath, $manifest, [System.Text.UTF8Encoding]::new($false))
 
 git add -A
 git diff --cached --quiet

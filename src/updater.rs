@@ -151,7 +151,12 @@ fn fetch_latest_manifest() -> Result<LatestManifest, String> {
         return Err(String::from("Offline or no release yet"));
     }
 
-    serde_json::from_slice::<LatestManifest>(&output.stdout)
+    let body = output
+        .stdout
+        .strip_prefix(&[0xEF, 0xBB, 0xBF])
+        .unwrap_or(&output.stdout);
+
+    serde_json::from_slice::<LatestManifest>(body)
         .map_err(|e| format!("Invalid manifest: {e}"))
 }
 
