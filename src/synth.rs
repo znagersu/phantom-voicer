@@ -177,6 +177,8 @@ struct SynthVoice {
     phase_c: f32,
     tine_phase: f32,
     tine_phase2: f32,
+    /// Dedicated inharmonic partial phases for stiff-rod Rhodes Mark I modal bank
+    rhodes_phases: [f32; 6],
     age_samples: u64,
     env: f32,
     pluck_env: f32,
@@ -205,6 +207,7 @@ impl Default for SynthVoice {
             phase_c: 0.0,
             tine_phase: 0.0,
             tine_phase2: 0.0,
+            rhodes_phases: [0.0; 6],
             age_samples: 0,
             env: 0.0,
             pluck_env: 0.0,
@@ -372,13 +375,13 @@ impl PhantomSynth {
         self.bass_growl = Biquad::peaking(sr, 820.0, 1.1, 2.4);
         self.bass_air = Biquad::high_shelf(sr, 2800.0, 2.0);
 
-        // Scarbee Mark I Fender Twin / 2x12 open-back cabinet voicing
-        self.mk1_cab_body_l = Biquad::peaking(sr, 165.0, 0.8, 2.6);
-        self.mk1_cab_body_r = Biquad::peaking(sr, 165.0, 0.8, 2.6);
-        self.mk1_cab_scoop_l = Biquad::peaking(sr, 430.0, 1.1, -1.6);
-        self.mk1_cab_scoop_r = Biquad::peaking(sr, 430.0, 1.1, -1.6);
-        self.mk1_cab_lpf_l = Biquad::low_pass(sr, 4700.0, 0.72);
-        self.mk1_cab_lpf_r = Biquad::low_pass(sr, 4700.0, 0.72);
+        // Scarbee Mark I Fender Twin Reverb clean cabinet voicing
+        self.mk1_cab_body_l = Biquad::peaking(sr, 130.0, 0.75, 1.8);
+        self.mk1_cab_body_r = Biquad::peaking(sr, 130.0, 0.75, 1.8);
+        self.mk1_cab_scoop_l = Biquad::peaking(sr, 410.0, 1.0, -1.8);
+        self.mk1_cab_scoop_r = Biquad::peaking(sr, 410.0, 1.0, -1.8);
+        self.mk1_cab_lpf_l = Biquad::low_pass(sr, 5200.0, 0.70);
+        self.mk1_cab_lpf_r = Biquad::low_pass(sr, 5200.0, 0.70);
         self.last_mk1_bass = 999.0;
         self.last_mk1_treble = 999.0;
     }
@@ -513,6 +516,7 @@ impl PhantomSynth {
             phase_c: if keep_phase { prev.phase_c } else { 0.53 },
             tine_phase: 0.0,
             tine_phase2: 0.0,
+            rhodes_phases: [0.0; 6],
             age_samples: 0,
             env: if keep_phase { prev.env.max(0.25) } else { 0.0 },
             pluck_env: 1.0,
@@ -637,60 +641,80 @@ impl PhantomSynth {
 
             let (sig_l, sig_r) = match patch {
                 // =========================================================================
-                // 1) SCARBEE MARK I — "PAN CAKE KORE" PHYSICAL MODEL
+                // 1) SCARBEE MARK I — "PAN CAKE KORE" STIFF-ROD MODAL MODEL
                 // =========================================================================
                 SoundPatch::VelvetRhodes => {
-                    let ph = v.phase * TAU;
-                    let nyquist_lim = sr * 0.40;
+                    let nyquist_lim = sr * 0.42;
 
-                    // Pure warm tonebar fundamental + velocity-proportional 2nd/3rd Rhodes bark
-                    // (avoiding harsh FM sidebands so chords stay velvety and woody)
-                    let bark_amt = (0.10 + bark * 0.45) * v.velocity.powf(1.4) * (0.35 + 0.65 * v.pluck_env);
-                    let mut tonebar = ph.sin();
-                    if f_eff * 2.0 < nyquist_lim {
-                        tonebar += (ph * 2.0).sin() * (0.14 + bark_amt * 0.48);
-                    }
-                    if f_eff * 3.0 < nyquist_lim {
-                        tonebar += (ph * 3.0).sin() * (0.04 + bark_amt * 0.24);
-                    }
-                    if f_eff * 4.0 < nyquist_lim {
-                        tonebar += (ph * 4.0).sin() * (bark_amt * 0.10);
+                    // Stiff-rod inharmonicity: f_k = k * f0 * sqrt(1 + B * k^2)
+                    // Lower keys have tighter spacing, higher keys shimmer slightly sharp like real steel tines
+                    let reg = ((v.note as f32 - 36.0) / 48.0).clamp(0.0, 1.0);
+                    let stiffness_b = 0.0007 + reg * 0.0011;
+
+                    // Individual modal decay envelopes (high partials die down into warm wood fundamental)
+                    let age_s = v.age_samples as f32 / sr;
+                    let vel_bright = (0.35 + 0.65 * v.velocity) * (0.55 + 0.65 * brightness);
+
+                    // Mode 1: Warm fundamental (tonebar coupled sustain)
+                    let mut modal_sum = (v.phase * TAU).sin() * 0.92;
+
+                    // Modes 2..7: Stiff-rod overtones + chime mode (~6.27x) with fast-to-medium decay
+                    let mode_ratios: [f32; 6] = [2.0, 3.0, 4.0, 5.0, 6.27, 7.0];
+                    let base_weights: [f32; 6] = [0.22, 0.08, 0.035, 0.022, 0.14, 0.08];
+                    let tau_secs: [f32; 6] = [1.45, 0.72, 0.34, 0.18, 0.085, 0.055];
+
+                    for i in 0..6 {
+                        let k = mode_ratios[i];
+                        let fk = f_eff * k * (1.0 + stiffness_b * k * k).sqrt();
+                        if fk >= nyquist_lim {
+                            continue;
+                        }
+                        let mdt = fk / sr;
+                        v.rhodes_phases[i] = (v.rhodes_phases[i] + mdt).fract();
+                        let decay = (-age_s / tau_secs[i]).exp();
+                        // Tine chime modes (6.27, 7.0) bloom gently with velocity & brightness
+                        let w = if i >= 4 {
+                            if v.is_bass { 0.015 } else { base_weights[i] * vel_bright }
+                        } else {
+                            base_weights[i] * (0.6 + 0.4 * vel_bright)
+                        };
+                        modal_sum += (v.rhodes_phases[i] * TAU).sin() * w * decay;
                     }
 
-                    // Separate woody-bell Rhodes tine (4x + 7x damped quickly, never shrill)
-                    v.tine_phase = (v.tine_phase + dt * 4.0).fract();
-                    v.tine_phase2 = (v.tine_phase2 + dt * 7.0).fract();
-                    let tine_lvl = if v.is_bass {
-                        0.03
+                    // Per-voice magnetic pickup proximity nonlinearity ("Rhodes Bark"):
+                    // Clean and glassy at soft/medium velocity; warm asymmetric bite ONLY on hard hits!
+                    let hard_vel = ((v.velocity - 0.52) / 0.48).clamp(0.0, 1.0);
+                    let bark_drive = (hard_vel * 0.42 + bark * 0.55) * (0.30 + 0.70 * v.pluck_env);
+                    let voice_out = if bark_drive > 0.02 {
+                        let x = modal_sum * (1.0 + bark_drive * 0.95);
+                        let asym = if x >= 0.0 {
+                            x - 0.16 * bark_drive * x * x
+                        } else {
+                            x + 0.08 * bark_drive * x * x
+                        };
+                        fast_tanh(asym) / (1.0 + bark_drive * 0.42)
                     } else {
-                        (0.08 + 0.16 * brightness) * (0.35 + 0.65 * v.velocity)
+                        modal_sum
                     };
-                    let mut tine = 0.0f32;
-                    if f_eff * 4.0 < nyquist_lim {
-                        tine += (v.tine_phase * TAU).sin() * v.pluck_env * tine_lvl * 0.75;
-                    }
-                    if f_eff * 7.0 < nyquist_lim {
-                        tine += (v.tine_phase2 * TAU).sin() * (v.pluck_env * v.pluck_env) * tine_lvl * 0.55;
-                    }
 
-                    // Instrument Noise: hammer strike felt knock + key-off damper release thud
+                    // Mechanical Instrument Noise: felt hammer knock + key-off damper release thump
                     let raw_noise = v.next_noise();
                     let filt_noise = voice_lpf(
                         raw_noise,
-                        280.0 + 260.0 * v.velocity,
+                        260.0 + 240.0 * v.velocity,
                         0.68,
                         sr,
                         &mut v.filter_ic1,
                         &mut v.filter_ic2,
                     );
                     let strike_noise =
-                        (filt_noise * 0.18 + (ph * 1.5).sin() * 0.06) * v.hammer_env * mk1.noise_level;
+                        (filt_noise * 0.14 + (v.phase * TAU * 1.5).sin() * 0.05) * v.hammer_env * mk1.noise_level;
                     let rel_thump =
-                        filt_noise * 0.28 * v.release_thump_env * mk1.release_noise;
+                        filt_noise * 0.24 * v.release_thump_env * mk1.release_noise;
 
-                    let core = (tonebar * 0.62 + tine) * v.env + strike_noise + rel_thump;
-                    let sample = core * v.velocity * 0.34;
-                    let key_pan = ((v.note as f32 - 60.0) / 48.0).clamp(-0.25, 0.25);
+                    let core = voice_out * 0.65 * v.env + strike_noise + rel_thump;
+                    let sample = core * v.velocity * 0.36;
+                    let key_pan = ((v.note as f32 - 60.0) / 54.0).clamp(-0.20, 0.20);
                     (sample * (1.0 - key_pan * 0.3), sample * (1.0 + key_pan * 0.3))
                 }
 
@@ -811,11 +835,11 @@ impl PhantomSynth {
                 right *= cg * 1.28;
             }
 
-            // 2) DIST. (optional warm overdrive)
-            if mk1.fx_dist || bark > 0.05 {
-                let drv = 1.0 + if mk1.fx_dist { 2.4 } else { 0.0 } + bark * 1.4;
-                left = fast_tanh(left * drv) / (1.0 + (drv - 1.0) * 0.42);
-                right = fast_tanh(right * drv) / (1.0 + (drv - 1.0) * 0.42);
+            // 2) DIST. (BYPASSED when mk1.fx_dist is OFF, matching Pan Cake Kore!)
+            if mk1.fx_dist {
+                let drv = 2.6 + bark * 1.6;
+                left = fast_tanh(left * drv) / (1.0 + (drv - 1.0) * 0.45);
+                right = fast_tanh(right * drv) / (1.0 + (drv - 1.0) * 0.45);
             }
 
             // 3) AUTOWAH (optional)
@@ -834,11 +858,11 @@ impl PhantomSynth {
                 right = right * 0.55 + pr * 0.45;
             }
 
-            // 5) AMP (ON in Pan Cake Kore! Tube preamp + Fender 2x12 cabinet body & speaker rolloff)
+            // 5) AMP (ON in Pan Cake Kore! Clean Fender Twin warmth + 2x12 cabinet tone, NO gritty fuzz)
             if mk1.fx_amp {
-                let drv = 1.0 + mk1.amp_drive * 1.65;
-                left = fast_tanh((left + 0.04 * left * left) * drv);
-                right = fast_tanh((right + 0.04 * right * right) * drv);
+                let drv = 1.0 + mk1.amp_drive * 0.55;
+                left = fast_tanh(left * drv) / (1.0 + mk1.amp_drive * 0.20);
+                right = fast_tanh(right * drv) / (1.0 + mk1.amp_drive * 0.20);
 
                 left = self.mk1_cab_body_l.process(left);
                 right = self.mk1_cab_body_r.process(right);
@@ -847,22 +871,22 @@ impl PhantomSynth {
                 left = self.mk1_cab_lpf_l.process(left);
                 right = self.mk1_cab_lpf_r.process(right);
 
-                let out_trim = 0.55 + mk1.amp_output * 0.85;
+                let out_trim = 0.65 + mk1.amp_output * 0.75;
                 left *= out_trim;
                 right *= out_trim;
             }
 
-            // 6) CHORUS (ON in Pan Cake Kore! Lush dual-tap BBD stereo chorus)
-            self.chorus_phase = (self.chorus_phase + TAU * 0.52 / sr).rem_euclid(TAU);
+            // 6) CHORUS (ON in Pan Cake Kore! Subtle, lush Boss CE-1 style stereo ensemble)
+            self.chorus_phase = (self.chorus_phase + TAU * 0.38 / sr).rem_euclid(TAU);
             self.delay_l[self.delay_idx] = left;
             self.delay_r[self.delay_idx] = right;
             if mk1.fx_chorus {
-                let mod1 = (0.0075 + 0.0028 * self.chorus_phase.sin()) * sr;
-                let mod2 = (0.0112 + 0.0028 * self.chorus_phase.cos()) * sr;
+                let mod1 = (0.0085 + 0.0018 * self.chorus_phase.sin()) * sr;
+                let mod2 = (0.0115 + 0.0018 * self.chorus_phase.cos()) * sr;
                 let wet_l = read_delay_linear(&self.delay_l, self.delay_idx, mod1);
                 let wet_r = read_delay_linear(&self.delay_r, self.delay_idx, mod2);
-                left = left * 0.72 + wet_r * 0.34;
-                right = right * 0.72 + wet_l * 0.34;
+                left = left * 0.84 + wet_r * 0.22;
+                right = right * 0.84 + wet_l * 0.22;
             }
             self.delay_idx = (self.delay_idx + 1) & 2047;
 

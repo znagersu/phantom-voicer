@@ -1261,14 +1261,17 @@ fn draw_mark1_kore_rack(ui: &mut egui::Ui, params: &PhantomParams, setter: &Para
             .max_rect(top_rect.shrink2(Vec2::new(10.0, 8.0)))
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
+    top_ui.spacing_mut().item_spacing.x = 4.0;
 
-    let col_w = (top_rect.width() - 36.0) / 5.0;
+    let top_inner_w = (top_rect.width() - 20.0).max(460.0);
+    let center_w = 122.0_f32;
+    let col_w = ((top_inner_w - center_w - 16.0) / 4.0).max(78.0);
     mk1_p5_knob(&mut top_ui, "BASS", &params.mk1_bass, setter, P5_CYAN, col_w);
     mk1_p5_knob(&mut top_ui, "TREBLE", &params.mk1_treble, setter, P5_GOLD, col_w);
 
     // Center Scarbee Mark I P5 Menu-Font Emblem
     top_ui.allocate_ui_with_layout(
-        Vec2::new(col_w + 16.0, 98.0),
+        Vec2::new(center_w, 98.0),
         egui::Layout::top_down(egui::Align::Center),
         |ui| {
             let (r1, _) = ui.allocate_exact_size(Vec2::new(col_w + 14.0, 32.0), Sense::hover());
@@ -1309,7 +1312,7 @@ fn draw_mark1_kore_rack(ui: &mut egui::Ui, params: &PhantomParams, setter: &Para
         &params.mk1_noise_level,
         setter,
         P5_WHITE,
-        col_w - 4.0,
+        col_w,
     );
     mk1_p5_knob(
         &mut top_ui,
@@ -1317,7 +1320,7 @@ fn draw_mark1_kore_rack(ui: &mut egui::Ui, params: &PhantomParams, setter: &Para
         &params.mk1_release_noise,
         setter,
         P5_RED,
-        col_w - 4.0,
+        col_w,
     );
 
     ui.add_space(8.0);
@@ -1361,10 +1364,17 @@ fn draw_mark1_kore_rack(ui: &mut egui::Ui, params: &PhantomParams, setter: &Para
             .max_rect(bot_rect.shrink2(Vec2::new(10.0, 8.0)))
             .layout(egui::Layout::left_to_right(egui::Align::Min)),
     );
+    bot_ui.spacing_mut().item_spacing.x = 4.0;
+
+    let bot_inner_w = (bot_rect.width() - 20.0).max(460.0);
+    let pill_col_w = if bot_inner_w < 540.0 { 82.0 } else { 94.0 };
+    let center_col_w = if bot_inner_w < 540.0 { 102.0 } else { 116.0 };
+    let knob_col_w = ((bot_inner_w - pill_col_w * 2.0 - center_col_w - 16.0) / 2.0).max(96.0);
+    let knob_w = ((knob_col_w - 4.0) / 2.0).floor();
 
     // Left FX Command Pills (PAN, AUTOWAH, COMP., CHORUS)
     bot_ui.allocate_ui_with_layout(
-        Vec2::new(98.0, 178.0),
+        Vec2::new(pill_col_w, 178.0),
         egui::Layout::top_down(egui::Align::Min),
         |ui| {
             ui.add_space(4.0);
@@ -1380,10 +1390,10 @@ fn draw_mark1_kore_rack(ui: &mut egui::Ui, params: &PhantomParams, setter: &Para
 
     // Left-Center Pan Controls (Intensity, Speed, Tempo Sync)
     bot_ui.allocate_ui_with_layout(
-        Vec2::new(124.0, 178.0),
+        Vec2::new(knob_col_w, 178.0),
         egui::Layout::top_down(egui::Align::Center),
         |ui| {
-            let (hdr_r, _) = ui.allocate_exact_size(Vec2::new(120.0, 24.0), Sense::hover());
+            let (hdr_r, _) = ui.allocate_exact_size(Vec2::new(knob_col_w - 4.0, 24.0), Sense::hover());
             draw_p5_3d_text(
                 ui.painter(),
                 hdr_r.center(),
@@ -1396,8 +1406,9 @@ fn draw_mark1_kore_rack(ui: &mut egui::Ui, params: &PhantomParams, setter: &Para
             );
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                mk1_p5_knob(ui, "INTENSITY", &params.mk1_pan_intensity, setter, P5_CYAN, 58.0);
-                mk1_p5_knob(ui, "SPEED", &params.mk1_pan_speed, setter, P5_GOLD, 58.0);
+                ui.spacing_mut().item_spacing.x = 4.0;
+                mk1_p5_knob(ui, "INTENSITY", &params.mk1_pan_intensity, setter, P5_CYAN, knob_w);
+                mk1_p5_knob(ui, "SPEED", &params.mk1_pan_speed, setter, P5_GOLD, knob_w);
             });
             ui.add_space(4.0);
             let sync = params.mk1_pan_sync.value();
@@ -1422,11 +1433,11 @@ fn draw_mark1_kore_rack(ui: &mut egui::Ui, params: &PhantomParams, setter: &Para
 
     // Center Preset & Insert Badge ("Pan Cake Kore" Ransom Button)
     bot_ui.allocate_ui_with_layout(
-        Vec2::new(120.0, 178.0),
+        Vec2::new(center_col_w, 178.0),
         egui::Layout::top_down(egui::Align::Center),
         |ui| {
             ui.add_space(6.0);
-            let (ir, _) = ui.allocate_exact_size(Vec2::new(116.0, 24.0), Sense::hover());
+            let (ir, _) = ui.allocate_exact_size(Vec2::new(center_col_w - 4.0, 24.0), Sense::hover());
             draw_p5_3d_text(
                 ui.painter(),
                 ir.center(),
@@ -1441,7 +1452,7 @@ fn draw_mark1_kore_rack(ui: &mut egui::Ui, params: &PhantomParams, setter: &Para
             ui.label(RichText::new("EFFECT PRESET").size(9.5).strong().color(P5_MUTED));
             ui.add_space(4.0);
 
-            let (pr, presp) = ui.allocate_exact_size(Vec2::new(114.0, 56.0), Sense::click());
+            let (pr, presp) = ui.allocate_exact_size(Vec2::new(center_col_w - 4.0, 56.0), Sense::click());
             let pp = ui.painter();
             let card = pr.shrink2(Vec2::new(2.0, 4.0));
             pp.rect_filled(card.translate(Vec2::new(3.0, 3.0)), CornerRadius::ZERO, P5_BLACK);
@@ -1481,10 +1492,10 @@ fn draw_mark1_kore_rack(ui: &mut egui::Ui, params: &PhantomParams, setter: &Para
 
     // Right-Center Amp Controls (Drive, Output)
     bot_ui.allocate_ui_with_layout(
-        Vec2::new(124.0, 178.0),
+        Vec2::new(knob_col_w, 178.0),
         egui::Layout::top_down(egui::Align::Center),
         |ui| {
-            let (hdr_r, _) = ui.allocate_exact_size(Vec2::new(120.0, 24.0), Sense::hover());
+            let (hdr_r, _) = ui.allocate_exact_size(Vec2::new(knob_col_w - 4.0, 24.0), Sense::hover());
             draw_p5_3d_text(
                 ui.painter(),
                 hdr_r.center(),
@@ -1497,8 +1508,9 @@ fn draw_mark1_kore_rack(ui: &mut egui::Ui, params: &PhantomParams, setter: &Para
             );
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                mk1_p5_knob(ui, "DRIVE", &params.mk1_amp_drive, setter, P5_RED, 58.0);
-                mk1_p5_knob(ui, "OUTPUT", &params.mk1_amp_output, setter, P5_WHITE, 58.0);
+                ui.spacing_mut().item_spacing.x = 4.0;
+                mk1_p5_knob(ui, "DRIVE", &params.mk1_amp_drive, setter, P5_RED, knob_w);
+                mk1_p5_knob(ui, "OUTPUT", &params.mk1_amp_output, setter, P5_WHITE, knob_w);
             });
             ui.add_space(6.0);
             ui.label(
@@ -1512,7 +1524,7 @@ fn draw_mark1_kore_rack(ui: &mut egui::Ui, params: &PhantomParams, setter: &Para
 
     // Right FX Command Pills (DIST., PHASER, AMP)
     bot_ui.allocate_ui_with_layout(
-        Vec2::new(ui.available_width(), 178.0),
+        Vec2::new(pill_col_w, 178.0),
         egui::Layout::top_down(egui::Align::Min),
         |ui| {
             ui.add_space(16.0);
@@ -1533,7 +1545,8 @@ fn mk1_p5_fx_pill(
     accent: Color32,
 ) {
     let active = param.value();
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(92.0, 34.0), Sense::click());
+    let pill_w = ui.available_width().min(92.0);
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(pill_w, 34.0), Sense::click());
     if resp.clicked() {
         setter.begin_set_parameter(param);
         setter.set_parameter(param, !active);

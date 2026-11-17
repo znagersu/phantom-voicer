@@ -204,7 +204,7 @@ pub struct PhantomParams {
 impl Default for PhantomParams {
     fn default() -> Self {
         Self {
-            editor_state: EguiState::from_size(860, 560),
+            editor_state: EguiState::from_size(940, 560),
 
             sound_patch: EnumParam::new("Sound", SoundPatch::VelvetRhodes),
             brightness: FloatParam::new(
@@ -305,7 +305,7 @@ impl Default for PhantomParams {
             .with_string_to_value(formatters::s2v_f32_gain_to_db()),
             rhodes_bark: FloatParam::new(
                 "Bark / Growl",
-                0.30,
+                0.15,
                 FloatRange::Linear { min: 0.0, max: 1.0 },
             )
             .with_unit("%")
