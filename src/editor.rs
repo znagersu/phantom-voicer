@@ -544,68 +544,106 @@ fn draw_crimson_command_zone(
             );
 
             // Auto-updater pill in bottom bar
-            let (up_label, up_fg, up_rim, can_install, can_recheck, hover_tip) = match up_status {
-                UpdateStatus::Idle | UpdateStatus::UpToDate => (
+            #[derive(Clone, Copy)]
+            enum UpAction {
+                None,
+                Recheck,
+                Install,
+                Cleanse,
+            }
+
+            let (up_label, up_fg, up_rim, action, hover_tip): (
+                String,
+                Color32,
+                Color32,
+                UpAction,
+                Option<String>,
+            ) = match &up_status {
+                UpdateStatus::Idle => (
                     format!("v{CURRENT_VERSION}"),
                     P5_WHITE,
                     P5_WHITE,
-                    false,
-                    true,
-                    Some("Up to date — click to check again"),
+                    UpAction::Recheck,
+                    Some("Click to check for updates & old copies".to_string()),
                 ),
                 UpdateStatus::Checking => (
                     "Checking...".to_string(),
                     P5_MUTED,
                     P5_WHITE,
-                    false,
-                    false,
+                    UpAction::None,
                     None,
                 ),
-                UpdateStatus::Available { version, .. } => (
-                    format!("UPDATE v{version}!"),
+                UpdateStatus::UpToDate { stale_copies } if *stale_copies > 0 => (
+                    format!("CLEANSE ({stale_copies} OLD)!"),
+                    P5_GOLD,
+                    P5_RED,
+                    UpAction::Cleanse,
+                    Some(format!(
+                        "Found {stale_copies} old/duplicate plugin copy(s) — click to cleanse!"
+                    )),
+                ),
+                UpdateStatus::UpToDate { .. } => (
+                    format!("v{CURRENT_VERSION}"),
+                    P5_WHITE,
+                    P5_WHITE,
+                    UpAction::Recheck,
+                    Some("Up to date — click to check again".to_string()),
+                ),
+                UpdateStatus::Available {
+                    version,
+                    stale_copies,
+                    ..
+                } => (
+                    if *stale_copies > 0 {
+                        format!("UPDATE v{version} + CLEAN!")
+                    } else {
+                        format!("UPDATE v{version}!")
+                    },
                     P5_GOLD,
                     P5_GOLD,
-                    true,
-                    false,
-                    Some("Click to download & install update"),
+                    UpAction::Install,
+                    Some("Click to update & cleanse old versions".to_string()),
                 ),
                 UpdateStatus::Installing(v) => (
-                    format!("Getting v{v}..."),
+                    format!("Working ({v})..."),
                     P5_CYAN,
                     P5_CYAN,
-                    false,
-                    false,
+                    UpAction::None,
                     None,
                 ),
                 UpdateStatus::ReadyToRestart(msg) => (
                     msg.clone(),
                     P5_CYAN,
                     P5_CYAN,
-                    false,
-                    false,
-                    Some("Finish the updater prompt & restart FL Studio"),
+                    UpAction::None,
+                    Some("Finish in the updater popup & reopen FL Studio".to_string()),
                 ),
                 UpdateStatus::Error(err) => (
                     format!("v{CURRENT_VERSION} (Retry)"),
                     P5_MUTED,
                     P5_WHITE,
-                    false,
-                    true,
-                    Some(err.as_str()),
+                    UpAction::Recheck,
+                    Some(err.clone()),
                 ),
             };
 
-            let (up_rect, up_resp) = ui.allocate_exact_size(Vec2::new(136.0, 28.0), Sense::click());
+            let (up_rect, up_resp) = ui.allocate_exact_size(Vec2::new(142.0, 28.0), Sense::click());
             if let Some(tip) = hover_tip {
                 up_resp.clone().on_hover_text(tip);
             }
             if up_resp.clicked() {
-                if can_install {
-                    if let UpdateStatus::Available { version, zip_url } = up_status {
-                        updater.install_async(version.clone(), zip_url.clone());
+                match action {
+                    UpAction::Install => {
+                        if let UpdateStatus::Available {
+                            version, zip_url, ..
+                        } = &up_status
+                        {
+                            updater.install_async(version.clone(), zip_url.clone());
+                        }
                     }
-                } else if can_recheck {
-                    updater.check_async();
+                    UpAction::Cleanse => updater.cleanse_async(),
+                    UpAction::Recheck => updater.check_async(),
+                    UpAction::None => {}
                 }
             }
             draw_p5_3d_text(
